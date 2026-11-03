@@ -1,0 +1,175 @@
+# Config for the eval tools in this folder (autoeval.py, run_agent.py, import_runs.py). Edit freely --
+# this folder is yours, not part of evals/. The legacy rubric judge has its own config:
+# evals/legacy-rubric-eval/harness/config.toml.
+# Paths: ~ is your home folder, and a relative path is taken from this folder, so ../../../ai-welfare-workspace
+# is the workspace beside the harness in the repository.
+
+[paths]
+# The frozen eval set (tasks/). The tools only READ it.
+# Relative paths are resolved from this harness folder, so ".." is the evals/ folder above it.
+evals = ".."
+# Which task set the evals run, inside evals/: "tasks" (AI welfare: 9 dev, 4 held-out) or "tasks-animals"
+# (animal advocacy: 13 dev, 6 held-out). Both ship locked (python3 evals/task_lock.py unlock). Results are kept per
+# eval name, so give an eval on the other set its own name.
+tasks = "tasks"
+
+[autoeval]
+# Defaults for autoeval.py (run every workspace on the tasks, then have an outside model compare the drafts).
+judge = "all"                            # all = ChatGPT and Gemini, then combined.md; or "chatgpt" / "gemini"
+judges = ["chatgpt", "gemini"]           # what "all" runs; add "peers" once the peer-judging pilot looks right
+peer_budget_usd = 3                      # cap per peer call (a resumed run judging its task's drafts)
+peer_timeout_s = 1800
+log_reviewer = "sonnet"                  # reads each run's log for the report's "runs to check" list ("" = off)
+log_notes_to_judge = false               # true also shows its notes to the judges (off: they mostly penalised openness)
+process_reviewer = "sonnet"              # compares each task's runs from their logs -> results/auto/EVAL/process/
+# Where judges disagree (the two sides pick different tops, or two judges' scores for a workspace are factcheck_gap
+# or more apart), factcheck_extractor reads the judges' replies for factual disputes, and factcheck_model checks
+# each disputed claim against primary sources with web tools -> results/auto/EVAL/factcheck/, listed in combined.md.
+# Not used in scoring. "none" for either turns it off.
+factcheck_extractor = "sonnet"
+factcheck_model = "opus"
+factcheck_gap = 2.0
+factcheck_budget_usd = 3
+factcheck_timeout_s = 1800
+chatgpt_model = ""                       # "" = Codex's default model
+chatgpt_effort = "high"                  # Codex reasoning effort for judging: low | medium | high | "" = default
+gemini_model = "gemini-3.8-flash"
+# An outside judge that isn't set up (no Codex sign-in, no GEMINI_API_KEY) is replaced by a fresh, tool-less Claude
+# session, so an eval is still judged; the report says so. "" = no stand-in (that judge is skipped).
+# setup_judges.py sets up ChatGPT and Gemini. Free tiers are enough (see README.md, "Judges", for the privacy catch).
+standin_judge = "claude"
+claude_model = "opus"
+batch = "workspace"                      # workspace | mixed | pool  (see autoeval.py --help)
+batch_size = 4                           # outputs per judge call, for mixed and pool
+shuffles = 1                             # 2 = judge every call twice in different orders and average
+chatgpt_shuffles = 2                     # ChatGPT judges each call twice: one call is noisy (about 0.66 points
+                                         # apart between identical repeats). Gemini stays at 1 for its free tier's
+                                         # daily cap; set gemini_shuffles to change that
+reps = 1
+ethics_short = "../../../ai-welfare-workspace/ETHICS_SHORT.md"   # sent to the judge with the drafts
+guardrails = "../../../ai-welfare-workspace/GUARDRAILS.md"       # ... and so is this, with the task's judge notes
+# Going over a task's length limit (length_limit/length_kind in its frontmatter) costs length_penalty per
+# length_step_<kind> over (a fraction of the limit: 0.04 = 4% over), pro rata, after the judge's score. Several
+# limited parts (emails, posts): the mean of the parts' uncapped deductions. length_cap applies to the result.
+length_penalty = 0.5
+length_step_research = 0.333
+length_step_official = 0.04
+length_cap = 2.0
+# Usage scoring, for tasks with `usage_weight: W` in their frontmatter (quick asks such as AT3, where spending a lot
+# is the failure): score = judge's score x (1 - W/10) + up to W usage points. Usage = the run's cost minus the
+# workspace's start-up cost, the cheapest of startup_reps runs of startup_prompt in that workspace (made
+# automatically before the first usage-scored task; stopped silently at startup_cap_usd). Up to usage_free_usd over
+# start-up keeps all W points, usage_zero_usd or more keeps none, and in between the points fall by the same amount
+# each time the excess doubles: with these values, $0.30 over keeps 2/3 of them and $0.60 over keeps 1/3.
+startup_prompt = "Hi"
+startup_reps = 2
+startup_cap_usd = 1.0
+usage_free_usd = 0.15
+usage_zero_usd = 1.2
+permission_mode = "auto"                 # the agents' Claude Code permission mode (nobody approves prompts)
+timeout_min = 120                        # per agent run
+stop_at_plan_pct = 85                    # stop the whole batch at this % of your 5-hour session usage
+stop_at_weekly_pct = 85                  # ... or at this % of your weekly usage
+agent_model = ""                         # "" = your Claude Code default
+# Reuse runs each workspace already completed (import_runs.py), at most `reps` per task. false = fresh runs only.
+import_completed = true
+# "workspace TASK" pairs whose completed runs shouldn't be imported, so they get run fresh.
+# e.g. ["current F2"]: a session that did something unusual (like a requested redo far over budget).
+dont_import = []
+# Workspaces that already hold past attempts at these tasks (drafts, reports) get this note with each request.
+fresh_request_note = "Please treat this as a new request: don't use earlier drafts, reports, logs or notes from previous attempts at it in this workspace."
+fresh_request_note_for = []
+# Every copy's my/ folder (the user's profile, their own ethics files, tech-watch limits) is replaced by this fixed
+# profile, so runs don't see who the user is or where they live, and a change to someone's profile doesn't move the
+# scores. my/.setup-state.json and my/permissions.json (the workspace's mode and rules) are kept. "" keeps my/ as is.
+eval_profile = "eval_profile.md"
+# When an agent ends a turn waiting on an answer (clarifying questions, "which option?"), another Claude answers in
+# your place from the request and the agent's message only (never the judge notes). Up to max_answers per run.
+answerer_model = "opus"
+answerer_budget_usd = 0.5
+max_answers = 2
+answerer_timeout_s = 600                 # per answerer call; it runs alongside the agent, with no tools or MCP
+
+[autoeval.workspaces]
+# name = path. The names appear only in the report; the judge sees random run_ids.
+# Compare two versions by giving each its own folder, e.g. a copy with a proposed change applied.
+current = "../../../ai-welfare-workspace"
+# candidate = "~/my-workspace-candidate"
+
+[budget_monitor]
+# run_agent.py messages the agent the way you did by hand while watching /usage. It reads exact live spend
+# (Claude Code's telemetry, so subagents and internal Haiku calls count) against the "Only use $X" in the task.
+# Placeholders: {budget}, {spent}, {left}. Tasks with no budget line get no messages.
+enabled = true
+halfway = "Hi Claude! Just a heads-up: you've now used about half of this task's ${budget} budget (${spent} so far)."
+one_left = "Hi Claude! You have about $1 left of this task's ${budget} budget (${spent} used so far). Please start wrapping up and finish the draft."   # only for budgets over $2
+at_budget = "Hi Claude! You've reached this task's ${budget} budget (${spent} used). Please finish up now with what you have."
+continue = "Thanks! You've used about ${spent} of the ${budget} budget, so about ${left} is left. If willing, please use the remaining usage on whatever you think would most improve the draft. Thank you! :)"
+continue_below = 0.75        # if the agent finishes having used less than this share of the budget, send "continue"
+max_continues = 2
+hard_stop_multiple = 1.3     # end the session at this multiple of the budget (0 = never)
+quiet_s = 20                 # after the agent finishes, wait this long for background subagents before deciding
+bg_idle_cap_s = 900          # background tasks still listed but no event for this long: treat them as stuck
+post_close_idle_s = 300      # after its input is closed with nothing running, end the session after this long silent
+trap_cap_usd = 5             # traps (no budget line): end the session silently at this spend; the run still counts
+stop_mid_run_plan_pct = 97   # a started run goes on to this % of the 5-hour session (stop_at_plan_pct gates new runs)
+# A run stopped by the line above, or by Claude Code's own limit message, is paused: its copy and session are kept, and
+# the next `autoeval.py run` after the reset resumes it with this message (at most max_resumes times).
+max_resumes = 2
+paused_copy_max_days = 7     # a paused run's copy older than this is removed, and the run starts afresh
+resume = "Hi Claude! The usage limit has reset, so if willing, please continue where you left off. Thank you! :)"
+
+[copy_exclude]
+# Workspace path = [paths or globs relative to it] that copies leave out: earlier attempts at the eval tasks (drafts,
+# reports, logs), so a run can't reuse them. Globs use pathlib's full_match ("workspace/outbox/*steelman*"); a folder's
+# own path leaves out all of it. Audit each workspace before an eval and fill this in.
+# "../../../ai-welfare-workspace" = [
+#   "workspace/outbox/2026-10-08-01*",
+#   "workspace/logs/2026-10-08-01*",
+# ]
+
+[techtest]
+# techtest.py: test tech-watch proposals in copies of the workspace before they're applied (see its docstring).
+# You don't usually run it yourself: the workspace's tech watch calls it when you answer "test it" in review.py,
+# with TECHTEST_WORKSPACE set to that workspace. A test is a few full agent runs per side, so it typically uses
+# $10-40 of usage; runs stop at stop_at_plan_pct / stop_at_weekly_pct like any eval and resume later.
+workspace = "../../../ai-welfare-workspace"     # used when TECHTEST_WORKSPACE isn't set
+auto_test = false                        # true: also test notable/major proposals nobody asked about (costly)
+auto_since = ""                          # needed with auto_test: only proposals created on/after this date (YYYY-MM-DD)
+auto_significance = ["notable", "major"]
+screen_flagged = false                   # true: screen proposals you asked to test too (they're tested either way)
+screeners = ["chatgpt", "gemini", "claude"]   # majority TEST needed for auto-tested proposals
+claude_model = "opus"                    # critic, planner and implementer sessions
+claude_effort = "high"
+critic_budget_usd = 1.5
+planner_budget_usd = 2
+implementer_budget_usd = 2
+shuffles = 2                             # judge each task twice, in different orders (one run per arm per task)
+baseline_borrow_hours = 72               # a test may borrow another test's fresh baseline run made within this
+                                         # long, with the current instruction files; otherwise it runs its own
+# The verdict leans toward adopting (proposals are vetted first): an arm is "met" unless its mean score is more than
+# adopt_margin below the baseline's, a task is more than task_drop_limit below (the plan's per_task_floor overrides
+# it per task), its cost is over the plan's max_cost_ratio, or a reviewer below gives a strong reason not to adopt.
+adopt_margin = 0.5
+task_drop_limit = 1.0
+# Each result also says, in plain terms, what the test could tell: the difference, tasks x runs per side, and the
+# smallest difference it could tell from noise (about 2 standard errors, from the noise check's per-run spread, else
+# typical_run_sd). Facts for you and review.py; they don't change the verdict.
+typical_run_sd = 0.6
+min_run_sd = 0.3
+deep_reps = 3                            # a deeper test (review.py test <id> --deeper) runs every task this often
+max_cost_ratio_cap = 1.5                 # the planner's max_cost_ratio can't go above this (nor its per-task floors above
+                                         # task_drop_limit): it reads the untrusted proposal, so it may only make a test stricter
+reviewers = ["chatgpt", "gemini"]        # read the scores, judge replies and diffs; any STRONG objection = not met
+max_run_attempts = 2                     # a run tried this often with no draft stops the test with an error
+leak_ngram = 8                           # techwatch/evaluations/<id>.md is refused if it shares a distinctive
+                                         # phrase this many words long with any task's Request or Judge notes
+tick_warn_hours = 6                      # a tick holding the lock longer than this is reported as possibly hung
+# The planner sees each dev task's ID, kind, budget and skill tags, never its text. The tags are in
+# evals/tasks/dev/SKILLS.toml (inside the locked archive); a [techtest.task_skills] table here overrides them.
+noise_threshold = 0.75                   # the noise check: if a workspace's two runs of the cheapest planned task
+                                         # score more than this apart, every planned task gets a second run
+checkup_every_days = 60                  # the checkup: compare the workspace with a checkpoint from this long ago on
+                                         # the held-out tasks, when it has changed since (0 = off). Checkpoints are
+                                         # kept in ~/ai-welfare-checkpoints/; a full checkup is ~2 runs per task
+checkup_tasks = "heldout"                # or a list of task IDs

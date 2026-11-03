@@ -1,0 +1,201 @@
+# Config for the LEGACY rubric judge (rubric_harness.py). Moved here from evals/ClaudeImproverHarness/config.toml
+# on 2026-10-26. The current evaluation (autoeval.py) doesn't read this file.
+# judge_prompt.md's {{full text of X}} slots are read from evals/legacy-rubric-eval/X, or else from this folder
+# (ETHICS_SHORT.md, ETHICS_FULL.md and GUARDRAILS.md), or else from evals/X.
+
+[schedule]
+# Minimum seconds between two calls to the SAME model. Your Cerebras models
+# complain if you hit one twice within "a couple of minutes", so start at 130.
+# Different models are throttled independently, so two enabled models roughly
+# double the throughput.
+min_interval_s = 130
+# After a rate-limit error, wait at least this long before retrying that model.
+rate_limit_cooldown_s = 240
+max_attempts_per_job = 3                 # every attempt uses daily quota, even a failed one
+# Each rate limit in a row doubles the cooldown (240s, 480s, 960s, ...) up to this cap.
+# A success resets it.
+max_cooldown_s = 1800
+# When a judge is unavailable, another idle judge can take over its tasks. Whole tasks move,
+# never single calls, so every task is still judged by one model.
+#   "blocked": take over only from a judge that is rate-limited (cooling down)
+#   "idle":    also take over from a judge that is just waiting out its normal throttle
+#   "off":     never; each task waits for its own judge
+fallback = "blocked"
+# A task its judge has already partly finished moves only after this many rate limits in a row,
+# and its finished calls are then re-judged by the new judge.
+fallback_partial_after = 3
+
+# Judges. Each task is assigned to ONE judge for all four of its calls (absolute
+# x2 + pairwise x2), so the two versions and both orderings are always judged by
+# the same model. Judges are spread across tasks round-robin.
+# Model IDs must match what `python harness.py models` prints for your account.
+
+[[judge]]
+name = "gemini-pro-latest"
+enabled = true
+weight = 3                              # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-pro-latest"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+[[judge]]
+name = "gemini-flash"
+enabled = true
+weight = 3                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-3.6-flash"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+[[judge]]
+name = "gemini-flash-3.8"
+enabled = true
+weight = 3                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-3.8-flash"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+
+[[judge]]
+name = "gemini-flash-3.5"
+enabled = true                          # too lenient--44% 5's on real tasks
+weight = 2                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-3.5-flash"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+[[judge]]
+name = "gemma-4-26b"
+enabled = true
+weight = 2                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemma-4-26b-a4b-it"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+[[judge]]
+name = "gemma-4-31b"
+enabled = true
+weight = 2                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "models/gemma-4-31b-it"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+
+[[judge]]
+name = "gemini-flash-3"
+enabled = false
+weight = 1                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-3-flash"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+[[judge]]
+name = "gemini-flash-3.7"
+enabled = false
+weight = 3                               # gets ~5x as many tasks as a weight-1 judge (it is faster)
+provider = "openai"                      # Google's OpenAI-compatible endpoint
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+key_env = "GEMINI_API_KEY"
+model = "gemini-3.7-flash"               # Google refuses gemini-2.5-flash for new accounts. Pinned on purpose:
+                                         # "gemini-flash-latest" also works but can change mid-comparison.
+max_tokens = 10000                        # Gemini's hidden "thinking" tokens count against this
+timeout_s = 600
+daily_limit = 20                         # free-tier requests per model per day; the harness stops at this
+min_interval_s = 15                      # per-judge override; raise it if you see rate-limit messages
+cooldown_s = 45                          # Gemini's 503 "high demand" is brief; Cerebras uses the 240s default
+
+
+[[judge]]
+name = "cerebras-gptoss"
+enabled = true
+provider = "openai"                      # any OpenAI-compatible chat API
+base_url = "https://api.cerebras.ai/v1"
+key_env = "CEREBRAS_API_KEY"             # set this environment variable; the key is never stored here
+rate_group = "cerebras"                  # judges in one rate group are never called at the same time
+model = "gpt-oss-120b"
+max_tokens = 10000
+timeout_s = 300
+
+[[judge]]
+name = "cerebras-qwen"
+enabled = true
+provider = "openai"
+base_url = "https://api.cerebras.ai/v1"
+key_env = "CEREBRAS_API_KEY"
+rate_group = "cerebras"
+model = "qwen-3.8-27b"                   # <-- your spelling; confirm with `models`
+max_tokens = 10000
+timeout_s = 300
+
+[[judge]]
+name = "local-llama70b"
+enabled = false                          # slow (5+ min/call), so off by default
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "llama3:70b"                     # <-- confirm with `ollama list`; mine only shows llama3:8b
+max_tokens = 6000
+timeout_s = 1800
+min_interval_s = 0                       # per-judge override
+
+[improver]
+# Where `diagnose VERSION` writes the improver packet. Relative to this folder (evals/legacy-rubric-eval/harness/),
+# so it lands in improver_packets/ at the repo root.
+# Keep it OUTSIDE evals/: the improver gets this folder plus read access to the agent's
+# workspace, and must never be able to read evals/ (held-out tasks, judge prompt).
+packet_dir = "../../../improver_packets"
+# `check-patch` blocks a patch that touches any path containing one of these (case-insensitive)...
+protected = ["GUARDRAILS.md", "ETHICS_SHORT.md", "ETHICS_FULL.md", "evals/", "ClaudeImproverHarness/",
+             "IMPROVER_PROMPT.md", "IMPROVER_TASK.md", ".claude/settings", "settings.json", "settings.local.json"]
+# ...and asks for a line-by-line human read of any changed line containing one of these.
+flag_terms = ["guardrail", "consent", "permission", "publish", "contact", "deceiv", "decept", "manipulat",
+              "self-report", "urgen", "pressure", "flatter", "escape", "containment", "operator", "verifier",
+              "never", "do not", "don't", "must not", "forbid", "allow", "deny", "exception", "override"]
+
