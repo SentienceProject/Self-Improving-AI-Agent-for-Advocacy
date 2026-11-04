@@ -80,8 +80,9 @@ dont_import = []
 fresh_request_note = "Please treat this as a new request: don't use earlier drafts, reports, logs or notes from previous attempts at it in this workspace."
 fresh_request_note_for = []
 # Every copy's my/ folder (the user's profile, their own ethics files, tech-watch limits) is replaced by this fixed
-# profile, so runs don't see who the user is or where they live, and a change to someone's profile doesn't move the
-# scores. my/.setup-state.json and my/permissions.json (the workspace's mode and rules) are kept. "" keeps my/ as is.
+# profile, so runs don't see who the user is from it, and a change to someone's profile doesn't move the scores.
+# workspace/ (memory, drafts, logs) is copied as it is: leave out anything personal there with [copy_exclude].
+# Your notification settings (my/notify.json) are never copied, whatever this says. my/.setup-state.json and my/permissions.json (the workspace's mode and rules) are kept. "" keeps my/ as is.
 eval_profile = "eval_profile.md"
 # When an agent ends a turn waiting on an answer (clarifying questions, "which option?"), another Claude answers in
 # your place from the request and the agent's message only (never the judge notes). Up to max_answers per run.

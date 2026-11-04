@@ -5,7 +5,11 @@ config, the task files in evals/tasks/, and the run folders under runs/.
 Until 2026-10-26 this file was also the old rubric judge's command line (judge, report, calibrate, spot-check,
 diagnose, check-patch). That judge is legacy now and lives in evals/legacy-rubric-eval/harness/rubric_harness.py.
 """
-import datetime, json, re, shutil, sys, tomllib
+import datetime, json, re, shutil, sys
+if sys.version_info < (3, 12):
+    sys.exit(f"The eval harness needs Python 3.12 or newer; this is {sys.version.split()[0]}. Install a newer Python "
+             "(e.g. sudo apt install python3.12) and run it with that.")
+import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

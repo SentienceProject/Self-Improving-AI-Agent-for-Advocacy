@@ -49,7 +49,8 @@ evals/
 
 ## Requirements
 
-- Linux or WSL2 (macOS and Windows are untested), Python 3.13+.
+- Linux or WSL2 (macOS and Windows are untested), Python 3.12 or newer (`python3 --version`; Ubuntu 24.04 has
+  3.12).
 - Claude Code, signed in. Agent runs use your plan's usage; `config.toml` stops new runs at 85% of the 5-hour
   window and 85% of the week. **A full eval is many full agent runs.** Start with `--only` on one or two tasks.
 - Outside judges (recommended, free tiers are enough): a ChatGPT account for the
@@ -61,8 +62,8 @@ evals/
 ## Setup
 
 1. **It's already in place:** this folder sits beside `ai-welfare-workspace` in the repository, and `config.toml`'s
-   defaults point at that workspace (`../../../ai-welfare-workspace`; relative paths there are taken from the
-   harness folder). The workspace's `setup.py` finds the harness here, or in `~/ai-welfare-evals/` if you'd rather
+   defaults point at that workspace (`../../../ai-welfare-workspace`: relative paths there are taken from the
+   folder `config.toml` is in, `evals/ClaudeImproverHarness`). The workspace's `setup.py` finds the harness here, or in `~/ai-welfare-evals/` if you'd rather
    keep it there. Agent runs can't read the harness folder wherever you put it: `run_agent.py` adds deny rules and
    sandbox read denies to every run, and turns off retrying commands outside the sandbox for those runs. The
    workspace's hardened mode blocks it too. On Windows without WSL2 there's no sandbox, so commands could still

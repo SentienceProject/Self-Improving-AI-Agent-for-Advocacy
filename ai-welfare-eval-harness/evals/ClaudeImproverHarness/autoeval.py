@@ -1310,7 +1310,8 @@ def usage_score(ev, name, tid, rep, task):
                                not exact),
                               ("it was paused and resumed, which costs extra", bool(md.get("resumed")))] if hit]
     return {"cost": cost, "startup": start, "excess": excess, "weight": w, "points": round(w * frac, 2),
-            "detail": f"${cost:.2f} spent, ${excess:.2f} over start-up" + (f" ({'; '.join(notes)})" if notes else "")}
+            "detail": f"${cost:.2f} spent, ${excess:.2f} over start-up (scale ${free:.2f}-${zero:.2f})"
+                      + (f" ({'; '.join(notes)})" if notes else "")}
 
 
 def mean(xs):

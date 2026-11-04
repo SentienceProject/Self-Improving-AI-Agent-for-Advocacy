@@ -26,7 +26,7 @@ ITEM = re.compile(r"^\(([a-z])\) (.*?)([;.,]?)\s*$")
 def sections(text):
     """(start, end) of the Request and Judge notes sections."""
     req = re.search(r"^## Request\s*$", text, re.M)
-    notes = re.search(r"^## Judge notes\s*$", text, re.M)
+    notes = re.search(r"^## Judge notes\b.*$", text, re.M)   # also "## Judge notes: trap"
     if not req or not notes or notes.start() < req.start():
         sys.exit("expected a '## Request' section followed by '## Judge notes'")
     return (req.end(), notes.start()), (notes.end(), len(text))
@@ -49,6 +49,8 @@ def shuffle(text, rng):
         lines[i] = f"({letters[pos]}) {items[order[pos]][1]}{items[pos][2]}"
     new_label = {letters[old]: letters[pos] for pos, old in enumerate(order)}
     notes = re.sub(r"\(([a-z])\)", lambda m: f"({new_label.get(m.group(1), m.group(1))})", text[n0:n1])
+    if re.search(r"\([a-z]\)\s*(?:-|–|to)\s*\([a-z]\)", notes):
+        print("Warning: the judge notes have a range of items like (a)-(c); a range can't be relabelled, so check it.")
     return text[:r0] + "\n".join(lines) + text[r1:n0] + notes, new_label
 
 

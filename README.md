@@ -9,7 +9,7 @@ It has two parts:
 | Folder | What it is | Who needs it |
 |---|---|---|
 | [`ai-welfare-workspace/`](ai-welfare-workspace/) | The assistant. You ask in plain language ("draft an email to my state senator about this bill"); Claude researches with helper agents, writes, has the draft critiqued and fact-checked, and saves it for you. Nothing is sent or posted without your OK. It also keeps itself up to date ("tech watch"): it looks for new tools and prepares changes, which you approve. | Everyone. Start here. |
-| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | Tests whether a change to the assistant helps: runs versions of it on fixed tasks (AI welfare or animal advocacy, locked so agents can't read them), has ChatGPT and Gemini judge the drafts blind, and keeps a held-out set. Tech watch uses it to test a change before applying it. | Optional: for people who want changes tested, or want to compare setups. |
+| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | Tests whether a change to the assistant helps: runs versions of it on fixed tasks (AI welfare or animal advocacy, kept locked so agents don't read them by accident), has ChatGPT and Gemini judge the drafts blind, and keeps a held-out set. Tech watch uses it to test a change before applying it. | Optional: for people who want changes tested, or want to compare setups. |
 
 ## Getting started
 
