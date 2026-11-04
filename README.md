@@ -2,25 +2,39 @@
 
 A ready-made setup for [Claude Code](https://code.claude.com/docs) that turns it into a careful research, writing and
 strategy assistant for people working on the welfare of animals, digital minds, or anyone else whose welfare is
-neglected, plus the tools to check, with outside judges, whether changes to it actually make it better.
+neglected, and that keeps improving itself: it finds new tools and techniques, tests each change on real advocacy
+tasks with outside judges, and keeps what works.
 
-It has two parts:
+It has two parts, and you need both:
 
-| Folder | What it is | Who needs it |
-|---|---|---|
-| [`ai-welfare-workspace/`](ai-welfare-workspace/) | The assistant. You ask in plain language ("draft an email to my state senator about this bill"); Claude researches with helper agents, writes, has the draft critiqued and fact-checked, and saves it for you. Nothing is sent or posted without your OK. It also keeps itself up to date ("tech watch"): it looks for new tools and prepares changes, which you approve. | Everyone. Start here. |
-| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | Tests whether a change to the assistant helps: runs versions of it on fixed tasks (AI welfare or animal advocacy, kept locked so agents don't read them by accident), has ChatGPT and Gemini judge the drafts blind, and keeps a held-out set. Tech watch uses it to test a change before applying it. | Optional: for people who want changes tested, or want to compare setups. |
+| Folder | What it is |
+|---|---|
+| [`ai-welfare-workspace/`](ai-welfare-workspace/) | **The assistant.** You ask in plain language ("draft an email to my state senator about this bill"); Claude researches with helper agents, writes, has the draft critiqued and fact-checked, and saves it for you. Nothing is sent or posted without your OK. "Tech watch" scans for new tools every day and prepares each one as an exact change to the workspace. |
+| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | **What makes the improvement trustworthy.** Before a change is applied, it runs the workspace with and without it on real advocacy tasks (AI welfare or animal advocacy), has ChatGPT and Gemini judge the drafts blind, and keeps a held-out set that no change is ever tuned on. Changes that do worse aren't applied; unclear ones can be tried and re-checked later. |
 
 ## Getting started
 
 1. Install [Claude Code](https://code.claude.com/docs/en/setup) and sign in (a Claude Pro or Max plan, or API
-   credit).
-2. Download this repository (Code → Download ZIP, or `git clone`, which lets you get updates later).
-3. Open the `ai-welfare-workspace` folder in Claude Code (`cd ai-welfare-workspace`, then `claude`), trust the folder
-   when asked, and tell it about your work.
+   credit). You also need [git](https://git-scm.com/downloads) and Python 3.12 or newer. On Windows,
+   [WSL2](https://learn.microsoft.com/windows/wsl/install) is the tested way.
+2. In a terminal:
+
+   ```
+   git clone https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy.git
+   cd Self-Improving-AI-Agent-for-Advocacy
+   cd ai-welfare-workspace
+   python3 setup.py
+   ```
+
+   Setup asks a few questions (your work, how tech watch runs, phone notifications, bringing in what other AI tools
+   know about you), then offers optional extras.
+3. Start Claude in the same folder: `claude`. Trust the folder when asked, and ask for something.
+
+Something not working? See [If something goes wrong](ai-welfare-workspace/README.md#if-something-goes-wrong).
 
 The [workspace README](ai-welfare-workspace/README.md) has the full guide: the two safety modes, tech watch, phone
-notifications, and what each part costs. The [harness README](ai-welfare-eval-harness/README.md) covers evaluation.
+notifications, and what each part costs. The [harness README](ai-welfare-eval-harness/README.md) covers testing and
+comparing versions.
 
 ## Status
 
