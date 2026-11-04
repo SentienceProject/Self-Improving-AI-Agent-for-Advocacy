@@ -604,13 +604,17 @@ def process_facts(ev, name, tid, rep, task):
     d = H.run_dir(version(ev, name), tid, rep)
     if not focus or model in ("", "none") or not (d / "log.md").is_file():
         return ""
-    prompt = PROCESS_FACTS_PROMPT.format(request=task["request"], focus=focus, log=H.rd(d / "log.md")[:60000])
+    log = H.rd(d / "log.md")
+    if len(log) > 60000:   # the start and the end: checks and reviews often come last
+        log = log[:30000] + "\n\n[... the middle of the log is left out ...]\n\n" + log[-30000:]
+    prompt = PROCESS_FACTS_PROMPT.format(request=task["request"], focus=focus, log=log)
     cache = H.RESULTS / "processfacts" / f"{sha(json.dumps([model, prompt]))}.json"
     if cache.exists():
         return json.loads(cache.read_text())["reply"]
-    reply = ask_small(prompt, model)
+    reply = ask_small(prompt, model) or ask_small(prompt, model)   # one retry: every run in a call should have one
     if not reply or reply.startswith("DECLINE"):
-        return ""
+        return ("[No summary of this run's process could be made. Judge its output on its own, and don't hold the "
+                "missing summary against it.]")
     cache.parent.mkdir(parents=True, exist_ok=True)
     H.write_json(cache, {"run": f"{ev}/{name}/{tid}/{rep}", "reply": reply})
     return reply
@@ -1165,7 +1169,9 @@ def ask_peer(ev, name, tid, rep, prompt):
         cmd = ["claude", "-p", "--resume", sid, "--fork-session", "--output-format", "json",
                "--permission-mode", "dontAsk", "--tools", PEER_TOOLS, "--allowedTools", PEER_TOOLS,
                "--strict-mcp-config", f"--disallowedTools={','.join(RA.CONNECTORS)}",
-               "--max-budget-usd", str(AUTO.get("peer_budget_usd", 3))]
+               "--max-budget-usd", str(AUTO.get("peer_budget_usd", 3)),
+               # the same reach as an agent run: no tasks, judge notes, results or other runs
+               "--settings", json.dumps(RA.off_limits_settings(copy, md["workspace"], RA.COPIES))]
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         r = subprocess.run(cmd, input=prompt, cwd=copy, env=env, capture_output=True, text=True,
                            timeout=AUTO.get("peer_timeout_s", 1800))
@@ -1271,7 +1277,8 @@ def run_cost(md):
 # doubles (a sliding scale, so a cent either side of a line doesn't matter).
 def startup_task():
     return {"id": STARTUP_ID, "request": AUTO.get("startup_prompt", "Hi"), "budget": None, "kind": "trap",
-            "silent_cap": AUTO.get("startup_cap_usd", 1.0)}
+            "silent_cap": AUTO.get("startup_cap_usd", 1.0),
+            "no_answer": True}   # a greeting back ("what shall we work on?") must not be answered with a task
 
 
 def startup_cost(ev, name):
@@ -1293,11 +1300,15 @@ def usage_score(ev, name, tid, rep, task):
     md = meta(ev, name, tid, rep)
     cost, exact = run_cost(md)
     start, _ = startup_cost(ev, name)
-    cost = cost or 0.0
+    if cost is None:   # unknown spend can't earn usage points
+        return {"cost": None, "startup": start, "excess": None, "weight": w, "points": 0.0,
+                "detail": "cost unknown, so no usage points"}
     excess = max(cost - (start or 0.0), 0.0)
     frac = 1.0 if excess <= free else 0.0 if excess >= zero else 1 - math.log2(excess / free) / math.log2(zero / free)
     notes = [n for n, hit in [("no start-up run, so the whole cost counts", start is None),
-                              ("imported session: its cost is a lower bound", not exact)] if hit]
+                              ("imported session: its cost is a lower bound, so its points may be too high",
+                               not exact),
+                              ("it was paused and resumed, which costs extra", bool(md.get("resumed")))] if hit]
     return {"cost": cost, "startup": start, "excess": excess, "weight": w, "points": round(w * frac, 2),
             "detail": f"${cost:.2f} spent, ${excess:.2f} over start-up" + (f" ({'; '.join(notes)})" if notes else "")}
 
@@ -1992,7 +2003,7 @@ def main():
         finally:
             release_lock()
         judges = AUTO.get("judges", ["chatgpt", "gemini"]) if a.judge == "all" else [a.judge]
-        if a.cmd in ("all", "judge"):
+        if a.cmd in ("all", "judge", "report"):   # the report reads the stand-in's results too
             judges = standins(judges)
         if a.cmd in ("all", "judge", "report"):
             a.process_flags = process_reports(a, tasks, ids)

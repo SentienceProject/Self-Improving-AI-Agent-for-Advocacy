@@ -719,7 +719,8 @@ def runs_code(trial, before, after):
     out = []
     for rel in sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k)):
         p, w = trial / rel, WS / rel
-        if "/hooks/" in f"/{rel}" or rel.endswith(".mcp.json"):
+        if "/hooks/" in f"/{rel}" or rel.endswith(".mcp.json") or (
+                rel.startswith("techwatch/scripts/") and rel.endswith(".py")):   # the session hook imports these
             out.append(rel)
         elif rel.startswith(".claude/settings") and rel.endswith(".json"):
             try:
@@ -1124,7 +1125,13 @@ def results(pid):
     {workspace: {task: (cost or None, exact?)}}."""
     a, _ = autoeval_args("report", pid, judge_args())
     scores = current_scores(pid, a)
-    costs = {w: {t: A.run_cost(A.meta(a.eval, w, t, 1)) for t in a.only.split(",")} for w in arms_ws(pid)[0]}
+    plan = jload(pid, "plan.json") or {}
+
+    def cost(w, t):   # the mean over the task's runs (a noisy or deeper test runs it more than once)
+        cs = [A.run_cost(A.meta(a.eval, w, t, r)) for r in range(1, reps_of(pid, t, plan) + 1)]
+        cs = [c for c in cs if c[0] is not None]
+        return (sum(c[0] for c in cs) / len(cs), all(c[1] for c in cs)) if cs else (None, False)
+    costs = {w: {t: cost(w, t) for t in a.only.split(",")} for w in arms_ws(pid)[0]}
     return scores, costs
 
 
@@ -1292,7 +1299,7 @@ def evidence(plan, arm, word, gain, n, ratio, floors, misses, objection, cost_ov
 # ---------------------------------------------------------------- outside review of the result
 OBJECT = """Hi {name}! I'm testing proposed changes to an AI-welfare research workspace run by Claude Code agents. \
 Each "arm" below is a copy of the workspace with one change made; the "baseline" is the unchanged workspace. \
-Each ran the same tasks once, and a blind judge (ChatGPT) scored the drafts side by side out of 10. The proposals \
+Each ran the same tasks ({runs}), and a blind judge (ChatGPT) scored the drafts side by side out of 10. The proposals \
 were vetted before testing, so I lean toward adopting any arm that doesn't do clearly worse. Before I do, I'd value \
 your honest second look: is there a STRONG reason not to adopt an arm? For example, a guardrail or ethics problem \
 in its drafts, a broken or unusable deliverable, behaviour the judge's comments show getting worse in a way the \
@@ -1346,7 +1353,8 @@ def objections(pid, means, costs, arms):
     reviewers, strong = {}, {arm: {} for arm in arms}
     for who in CFG.get("reviewers", ["chatgpt", "gemini"]):
         prompt = OBJECT.format(name={"chatgpt": "ChatGPT", "gemini": "Gemini"}.get(who, who.title()),
-                               context=proposal_context(pid), table=table, diffs=diffs, replies=replies)
+                               context=proposal_context(pid), table=table, diffs=diffs, replies=replies,
+                               runs=runs_phrase(plan))
         try:
             os.environ.setdefault("GEMINI_API_KEY", env().get("GEMINI_API_KEY", ""))
             model = A.AUTO.get(f"{who}_model") or None
@@ -1683,14 +1691,31 @@ def cmd_tick(a):
     todo = [(p, w) for p, w in candidates() if not a.only or p == a.only]
     blocked = False  # once usage is out, later proposals still get their judge and report steps
     for pid, why in todo:
-        if state(pid).get("error"):
-            continue  # failed before; a retry could spend again, so it waits for `retry` or `redo`
-        st = state(pid)
-        if finished(st) and (ft := flag_ts(pid)) > st.get("flag_ts", ""):
-            print(f"  {pid}: you flagged it again after its test finished: testing it again from the plan step",
-                  flush=True)
-            redo(pid, "plan")
-            st = state(pid)
+        st, ft = state(pid), flag_ts(pid)
+        if st.get("error"):
+            if ft <= st.get("flag_ts", ""):
+                continue  # failed before; a retry could spend again, so it waits for `retry`, `redo` or a new flag
+            print(f"  {pid}: you flagged it again after an error ({st['error'][:120]}): trying again", flush=True)
+            st.pop("error", None)
+            st["flag_ts"] = ft
+            save_state(pid, st)
+        if finished(st) and ft > st.get("flag_ts", ""):
+            plan = jload(pid, "plan.json") or {}
+            if request_depth(pid) == "deeper" and plan.get("tasks") and st.get("outcome") == "tested":
+                # A deeper look at the same test: keep the plan, the arms and the runs made so far, and add repeats.
+                print(f"  {pid}: a deeper test: every task now runs {CFG.get('deep_reps', 3)} times; the runs "
+                      "already made are kept", flush=True)
+                set_reps(plan, H.load_tasks(), pid)
+                plan.pop("noise", None)
+                jsave(pid, "plan.json", plan)
+                redo(pid, "judge")
+                st = state(pid)
+                st["done"] = [x for x in st["done"] if x != "run"]
+            else:
+                print(f"  {pid}: you flagged it again after its test finished: testing it again from the plan step",
+                      flush=True)
+                redo(pid, "plan")
+                st = state(pid)
             st.update(flag_ts=ft, why=why)
             save_state(pid, st)
         try:
@@ -1730,6 +1755,16 @@ def save_checkup(st):
     H.write_json(CHECKUP / "state.json", st, indent=1)
 
 
+def trial_due(last_checkpoint):
+    """True if a change has been on trial (review.py trial) for two weeks or more since the last checkpoint: its
+    trial ends at the next checkup, so that comes now rather than after checkup_every_days."""
+    evs = ledger()
+    today = datetime.date.today()
+    return any(e.get("event") == "trial_started" and status_of(e["id"], evs) == "trial_started"
+               and e.get("ts", "")[:10] >= last_checkpoint
+               and (today - datetime.date.fromisoformat(e["ts"][:10])).days >= 14 for e in evs)
+
+
 def make_checkpoint(st):
     """A full copy of the workspace as it is now (minus what make_copy leaves out), kept indefinitely: the archive
     of earlier versions that a checkup compares against and that review.py can restore."""
@@ -1737,8 +1772,11 @@ def make_checkpoint(st):
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
     if (CHECKPOINTS / day).exists():
         RA.remove_copy(CHECKPOINTS / day)
-    RA.make_copy(WS, CHECKPOINTS, day)
+    excluded = []
+    RA.make_copy(WS, CHECKPOINTS, day, excluded=excluded)
     strip_trial(CHECKPOINTS / day)
+    # review.py restore reads this: files absent from the checkpoint by design aren't deleted as "added since".
+    H.write_json(CHECKPOINTS / day / ".checkpoint.json", {"left_out": sorted(RA.COPY_SKIP) + [str(x) for x in excluded]})
     st["checkpoints"] = [c for c in st["checkpoints"] if c["date"] != day] + [
         {"date": day, "path": str(CHECKPOINTS / day), "files": instruction_hashes(WS)}]
     save_checkup(st)
@@ -1771,7 +1809,7 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
     if not cur:
         last = st["checkpoints"][-1]
         age = (datetime.date.today() - datetime.date.fromisoformat(last["date"])).days
-        if not now and (age < every or last["files"] == instruction_hashes(WS)):
+        if not now and not trial_due(last["date"]) and (age < every or last["files"] == instruction_hashes(WS)):
             return
         if not checkup_tasks():
             return print("  checkup: no held-out tasks to run it on", flush=True)

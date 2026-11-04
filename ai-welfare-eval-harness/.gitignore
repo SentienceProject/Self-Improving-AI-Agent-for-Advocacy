@@ -11,9 +11,8 @@ evals/legacy-rubric-eval/data/
 improver_packets/
 # Unlocked task folders (python3 evals/task_lock.py unlock). The repo ships only the .locked file, and your own
 # *.private.md tasks never go into it.
-evals/tasks/dev/
-evals/tasks/heldout/
-evals/tasks/retired/
-evals/tasks-animals/dev/
-evals/tasks-animals/heldout/
+evals/tasks*/dev/
+evals/tasks*/heldout/
+evals/tasks*/retired/
+evals/.unlocked-from
 evals/legacy-rubric-eval/improver_tasks/

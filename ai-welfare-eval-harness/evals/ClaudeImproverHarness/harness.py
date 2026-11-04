@@ -127,6 +127,13 @@ def load_tasks():
                 "length": {"limit": int(meta["length_limit"]), "kind": meta.get("length_kind", "research"),
                            "unit": meta.get("length_unit", "words")} if meta.get("length_limit") else None,
             }
+    for t in tasks.values():
+        u = t["usage"]
+        if u and t["budget"]:
+            sys.exit(f"{t['id']}: usage_weight and an \"Only use $X\" budget line contradict each other (the budget "
+                     "monitor would urge it to spend what usage scoring takes points off for); keep one")
+        if u and not (0 < u["weight"] <= 10 and 0 < u.get("free", 0.15) < u.get("zero", 1.2)):
+            sys.exit(f"{t['id']}: usage_weight must be 0-10, and usage_free_usd above 0 and below usage_zero_usd")
     return tasks
 
 

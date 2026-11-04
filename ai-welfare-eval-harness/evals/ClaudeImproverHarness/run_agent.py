@@ -123,6 +123,8 @@ def neutral_my(dst):
     say, would change what a draft should say), and scores don't move when someone edits their profile. Workspaces
     without a my/ folder are left alone."""
     my, text = dst / "my", eval_profile()
+    for private in ("notify.json", ".followups-state.json"):   # whatever eval_profile says: no run may notify you
+        (my / private).unlink(missing_ok=True)
     if text is None or not my.is_dir():
         return
     for p in my.iterdir():
@@ -206,6 +208,8 @@ def leftover_paths(copy, src):
                 out.add(f"{p.relative_to(copy)}: {ref} (the original workspace)")
             elif not path.exists():
                 out.add(f"{p.relative_to(copy)}: {ref} (doesn't exist)")
+        if str(src) in text:   # a workspace anywhere (e.g. inside the repository), not only under ~/ai-welfare*
+            out.add(f"{p.relative_to(copy)}: {src} (the original workspace)")
     return sorted(out)
 
 
@@ -332,8 +336,9 @@ class CostMeter:
                                 a = {x["key"]: next(iter(x["value"].values()), None) for x in rec.get("attributes", [])}
                                 if a.get("event.name") == "api_request":
                                     with lock:
-                                        meter.total += float(a.get("cost_usd") or 0)
-                                        meter.by_model[a.get("model", "?")] += float(a.get("cost_usd") or 0)
+                                        c = max(float(a.get("cost_usd") or 0), 0.0)   # never negative
+                                        meter.total += c
+                                        meter.by_model[a.get("model", "?")] += c
                 except (ValueError, KeyError, StopIteration):
                     pass
                 self.send_response(200)
@@ -680,6 +685,8 @@ def off_limits_settings(copy=None, src=None, copies_dir=None):
     covers Glob and Grep), and the sandbox (switched on here) with read and write denies for commands."""
     dirs = {str(H.EVALS.parent), str(Path.home() / "ai-welfare-evals"), str(Path.home() / "ai-welfare-checkpoints"),
             str(Path.home() / "ai-welfare-trials")}   # earlier versions and test arms: other runs' material
+    if (H.EVALS.parent.parent / ".git").exists():   # the repository's history holds the task archive too
+        dirs.add(str((H.EVALS.parent.parent / ".git").resolve()))
     if src:
         dirs.add(str(Path(src).resolve()))
     if copies_dir and Path(copies_dir).is_dir():
@@ -695,14 +702,23 @@ def off_limits_settings(copy=None, src=None, copies_dir=None):
 
 SECRET_NAME = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|AUTH)", re.I)
 # What Claude Code itself may need to log in (API key, OAuth token, Bedrock, Vertex, a gateway).
-CLAUDE_AUTH = re.compile(r"^(ANTHROPIC_|CLAUDE_|AWS_|CLOUD_ML_|VERTEX_|GOOGLE_APPLICATION_CREDENTIALS$)")
+CLAUDE_AUTH = re.compile(r"^(ANTHROPIC_|CLAUDE_)")
+# Cloud credentials only when Claude Code itself is set to use that cloud: otherwise AWS keys kept for unrelated work
+# would reach an agent that reads web pages.
+CLOUD_AUTH = {"CLAUDE_CODE_USE_BEDROCK": re.compile(r"^AWS_"),
+              "CLAUDE_CODE_USE_VERTEX": re.compile(r"^(CLOUD_ML_|VERTEX_|GOOGLE_APPLICATION_CREDENTIALS$)")}
 
 
 def agent_env():
     """The environment for an agent run: yours, minus other services' keys and tokens (GEMINI_API_KEY, OPENAI_*,
-    GITHUB_TOKEN, ...). The agent reads web pages, so a page could try to get it to print or send them."""
-    return {k: v for k, v in os.environ.items()
-            if k != "CLAUDECODE" and (CLAUDE_AUTH.match(k) or not SECRET_NAME.search(k))}
+    GITHUB_TOKEN, AWS keys unless Claude Code uses Bedrock, ...). The agent reads web pages, so a page could try to
+    get it to print or send them. AI_WELFARE_EVAL=1 tells the workspace's scripts (notify.py) it's an eval run."""
+    clouds = [pat for flag, pat in CLOUD_AUTH.items() if os.environ.get(flag)]
+    env = {k: v for k, v in os.environ.items()
+           if k != "CLAUDECODE" and (CLAUDE_AUTH.match(k) or any(c.match(k) for c in clouds)
+                                     or not (SECRET_NAME.search(k) or any(c.match(k) for c in CLOUD_AUTH.values())))}
+    env["AI_WELFARE_EVAL"] = "1"
+    return env
 
 
 def settings_env_secrets():
@@ -718,7 +734,8 @@ def settings_env_secrets():
 ACTIVITY = {"task_started", "task_notification", "background_tasks_changed"}  # + assistant, user, result
 
 
-def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=None, resume=None, src=None):
+def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=None, resume=None, src=None,
+               no_answer=False):
     """Run one session, keeping it open so the operator's budget messages can be sent the way a person would:
     mid-run ones arrive at the agent's next tool call, and "continue" starts a new turn after it has finished.
     A turn counts as finished only when no background task (subagent, Bash) it started is still running.
@@ -911,7 +928,7 @@ def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=Non
             if not working and (not bg or bg_stuck) and idle_for >= MONITOR["quiet_s"] and not ask:
                 # It stopped to ask something (nobody is there to reply in a headless run): answer in the
                 # requester's place, so the draft isn't just the questions. In a thread, so the stream is still read.
-                if answers < max_answers and last_reply:
+                if answers < max_answers and last_reply and not no_answer:
                     ask = start_answerer(args, request, last_reply, saved_files(copy, before),
                                          ", ".join(bg.values()) if bg else "none")
                     ask.update(seq=seq, message=last_reply)
@@ -1147,11 +1164,11 @@ def write_log(out_dir, meta, transcript, run_logs, final_reply, drafts):
 
 def run_code_version():
     """A short hash of what decides how a run is made: this file, harness.py, the eval profile, and the config
-    sections it reads ([monitor], [copy_exclude], the answerer's settings). The report flags an eval whose runs differ in it, i.e.
+    sections it reads ([budget_monitor] with its defaults, [copy_exclude], the answerer's settings). The report flags an eval whose runs differ in it, i.e.
     the run process changed part-way. Judging and report code are left out on purpose."""
     auto = H.CFG.get("autoeval", {})
     parts = [Path(__file__).read_bytes(), (H.HERE / "harness.py").read_bytes(), (eval_profile() or "").encode(),
-             json.dumps([H.CFG.get("monitor"), H.CFG.get("copy_exclude"),
+             json.dumps([MONITOR, H.CFG.get("copy_exclude"),
                          {k: v for k, v in auto.items() if k.startswith(("answerer", "max_answers", "fresh_request"))}],
                         sort_keys=True, default=str).encode()]
     return hashlib.sha256(b"\0".join(parts)).hexdigest()[:12]
@@ -1161,7 +1178,9 @@ def source_state(src):
     def git(*a):
         r = subprocess.run(["git", "-C", str(src), *a], capture_output=True, text=True)
         return r.stdout.strip() if r.returncode == 0 else None
-    return {"commit": git("rev-parse", "HEAD"), "uncommitted_changes": bool(git("status", "--porcelain"))}
+    # The workspace folder's own tree (it may be one folder of a bigger repository), and changes inside it only.
+    return {"commit": git("rev-parse", "HEAD:./") or git("rev-parse", "HEAD"),
+            "uncommitted_changes": bool(git("status", "--porcelain", "--", "."))}
 
 
 # ---------------------------------------------------------------- one task run
@@ -1282,7 +1301,7 @@ def run_one(args, version, src, task, rep):
               + (f" (resume {meta['resumes']}, ${resume['prior_cost']:.2f} spent so far)" if resume else ""), flush=True)
         t0 = time.time()
         meta.update(run_claude(args, copy, request, out_dir, label, budget, before, cap=cap, resume=resume,
-                               src=src))
+                               src=src, no_answer=bool(task.get("no_answer"))))
         elapsed = (resume or {}).get("prior_elapsed_s", 0) + time.time() - t0
         meta["cost_by_model"] = {k: round(v, 4) for k, v in (prior_by_model + Counter(meta["cost_by_model"])).items()}
         code, timed_out = meta["exit_code"], meta["timed_out"]
