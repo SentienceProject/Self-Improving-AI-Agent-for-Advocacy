@@ -1306,7 +1306,8 @@ in its drafts, a broken or unusable deliverable, behaviour the judge's comments 
 scores hide, a cost blow-up, or a change that could do harm elsewhere in the workspace. Small score differences, \
 style preferences and ordinary noise aren't strong reasons. No worries if you'd rather not do this. Thank you! :)
 
-At the very end, please add one line per arm in exactly this form so my script can read it:
+At the very end, please add one line per arm (the arms here: {arm_names}) in exactly this form so my script can \
+read it:
 OBJECTION <arm name>: NONE
 or
 OBJECTION <arm name>: STRONG - <one-sentence reason>
@@ -1354,7 +1355,7 @@ def objections(pid, means, costs, arms):
     for who in CFG.get("reviewers", ["chatgpt", "gemini"]):
         prompt = OBJECT.format(name={"chatgpt": "ChatGPT", "gemini": "Gemini"}.get(who, who.title()),
                                context=proposal_context(pid), table=table, diffs=diffs, replies=replies,
-                               runs=runs_phrase(plan))
+                               runs=runs_phrase(plan), arm_names=", ".join(arms))
         try:
             os.environ.setdefault("GEMINI_API_KEY", env().get("GEMINI_API_KEY", ""))
             model = A.AUTO.get(f"{who}_model") or None
@@ -1365,6 +1366,9 @@ def objections(pid, means, costs, arms):
             continue
         found = dict(re.findall(r"OBJECTION\s+\**([\w-]+)\**\s*:\s*\**\s*(NONE|STRONG\b.*)", reply, re.I))
         found = {k.lower(): v for k, v in found.items()}
+        if len(arms) == 1 and arms[0] not in found and len(found) == 1:
+            # One arm, one verdict under another label (often the proposal's id): it can only be about that arm.
+            found = {arms[0]: next(iter(found.values()))}
         reviewers[who] = {"reply": reply, "readable": all(arm in found for arm in arms)}
         for arm in arms:
             v = found.get(arm, "")
