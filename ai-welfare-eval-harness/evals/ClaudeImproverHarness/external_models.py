@@ -11,9 +11,18 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOG = HERE / "external-queries-log.md"
-CODEX = Path.home() / ".npm-global" / "bin" / "codex"
-if not CODEX.exists():
-    CODEX = Path(shutil.which("codex") or CODEX)
+
+
+def find_codex():
+    """The Codex CLI: on PATH, or where npm puts it (also right after an install, before PATH is refreshed)."""
+    for p in (shutil.which("codex"), Path.home() / ".npm-global" / "bin" / "codex",
+              Path(os.environ.get("APPDATA", "~")) / "npm" / "codex.cmd"):
+        if p and Path(p).exists():
+            return Path(p)
+    return Path.home() / ".npm-global" / "bin" / "codex"
+
+
+CODEX = find_codex()
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -47,7 +56,7 @@ def ask_chatgpt(prompt, model=None, timeout=1800, effort=None):
     return reply
 
 
-def ask_gemini(prompt, model=None, timeout=900, effort=None):
+def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         raise ModelError("GEMINI_API_KEY is not set")
@@ -56,19 +65,19 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None):
         data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode(),
         headers={"Content-Type": "application/json", "x-goog-api-key": key},
     )
-    for attempt in range(6):
+    for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.load(resp)
             break
         except urllib.error.HTTPError as e:
             # 429/500/503/504 are usually transient (rate limit, overload); back off and retry, ~10 min in all
-            if e.code in (429, 500, 502, 503, 504) and attempt < 5:
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries:
                 time.sleep(10 * 2 ** attempt)
                 continue
             raise ModelError(f"gemini failed: HTTP {e.code}\n{e.read().decode()[:2000]}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            if attempt < 5:
+            if attempt < retries:
                 time.sleep(10 * 2 ** attempt)
                 continue
             raise ModelError(f"gemini failed: {e!r}")

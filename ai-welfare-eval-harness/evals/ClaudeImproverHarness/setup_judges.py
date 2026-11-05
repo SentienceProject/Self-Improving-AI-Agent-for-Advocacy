@@ -6,22 +6,61 @@
 
 Outside judges matter: Claude judging Claude's drafts may share their blind spots. Free tiers are enough. Any judge
 that isn't set up is replaced by a fresh Claude session when you run autoeval.py (standin_judge in config.toml),
-so an eval still works without them, just with weaker judging.
+so an eval still works without them, just with weaker judging. Every step can be skipped (Enter, or Ctrl+C), and
+each test gives up after a minute or two, so this never holds up the rest of setup.
 
 This script never reads, stores or prints an API key. It tells you where to put one.
 """
-import shutil, subprocess, sys
+import os, shutil, subprocess, sys
+from pathlib import Path
 
 import external_models as X
+from style import S
 
 TEST = "Hi! This is a quick connection test. If you're willing, please reply with just: ok. Thank you!"
+WINDOWS = os.name == "nt"
+LATER = "python3 setup_judges.py   (in this folder: ai-welfare-eval-harness/evals/ClaudeImproverHarness)"
 
 
 def yes(q):
     try:
-        return input(f"{q} [y/N] ").strip().lower() == "y"
+        return input(f"{S.ask(q)} [y/N] ").strip().lower() == "y"
     except EOFError:
         return False
+
+
+def find_npm():
+    for p in (shutil.which("npm"), Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs" / "npm.cmd"):
+        if p and Path(p).exists():
+            return str(p)
+    return None
+
+
+def install_node():
+    """Node.js is what the Codex CLI runs on. Most people don't have it; say exactly how to get it."""
+    print("  The ChatGPT judge uses the Codex CLI, OpenAI's small command-line app, which needs Node.js (a free\n"
+          "  program many apps run on). You don't have it yet. To install it:")
+    if WINDOWS:
+        if shutil.which("winget") and yes("  Install Node.js now with Windows' own installer (winget; it may ask "
+                                          "for permission)?"):
+            r = subprocess.run(["winget", "install", "--id", "OpenJS.NodeJS.LTS", "-e",
+                                "--accept-source-agreements", "--accept-package-agreements"])
+            if r.returncode == 0 and find_npm():
+                print("  " + S.ok("Node.js installed."))
+                return find_npm()
+            print("  " + S.warn("That didn't finish. You can install it by hand instead:"))
+        print("  1. Go to " + S.b("https://nodejs.org") + " and download the version marked LTS (the Windows Installer).\n"
+              "  2. Run it, clicking Next through the defaults.\n"
+              "  3. Close this PowerShell window, open a new one, and run setup again.")
+    elif sys.platform == "darwin":
+        print("  1. Go to " + S.b("https://nodejs.org") + " and download the version marked LTS (the macOS Installer).\n"
+              "  2. Open it and click through the defaults (or, if you use Homebrew: brew install node).\n"
+              "  3. Open a new terminal window and run setup again.")
+    else:
+        print("  1. Install Node.js with your system's package manager, e.g.\n" + S.cmd("sudo apt install nodejs npm") +
+              "\n     (or see " + S.b("https://nodejs.org/en/download") + ").\n"
+              "  2. Run setup again.")
+    return None
 
 
 def setup_chatgpt(check):
@@ -31,19 +70,24 @@ def setup_chatgpt(check):
     print(f"ChatGPT: {why}.")
     if check:
         return False
+    if not yes("  Set up ChatGPT as a judge now? A free ChatGPT account is enough (Enter skips)"):
+        print(f"  skipped (any time later: {LATER})")
+        return False
     if not X.CODEX.exists():
-        npm = shutil.which("npm")
+        npm = find_npm() or install_node()
         if not npm:
-            print("  Install Node.js (which includes npm) first, then run this again: https://nodejs.org")
             return False
-        if not yes("  Install the Codex CLI now (npm install -g @openai/codex)?"):
-            return False
+        print("  Installing the Codex CLI (npm install -g @openai/codex) ...")
         if subprocess.run([npm, "install", "-g", "@openai/codex"]).returncode != 0:
-            print("  The install failed; see npm's message above. If it's a permissions error, see\n"
-                  "  https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally")
+            print("  " + S.warn("The install failed; see npm's message above. If it's a permissions error, see\n"
+                  "    https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"))
             return False
-        X.CODEX = X.Path(shutil.which("codex") or X.CODEX)
-    if yes("  Sign in to Codex with your ChatGPT account now (opens a browser)?"):
+        X.CODEX = X.find_codex()
+        if not X.CODEX.exists():
+            print("  " + S.warn("Installed, but this window can't see it yet: open a new terminal and run setup again."))
+            return False
+    print("  Next, sign in: a browser window opens; log in with your ChatGPT account, then come back here.")
+    if yes("  Sign in now?"):
         subprocess.run([str(X.CODEX), "login"])
     return X.available("chatgpt")[0]
 
@@ -51,36 +95,63 @@ def setup_chatgpt(check):
 def setup_gemini(check):
     ok, why = X.available("gemini")
     if ok:
+        print("Gemini: found an API key (GEMINI_API_KEY) in your environment.")
         return True
     print(f"Gemini: {why}.")
     if not check:
-        print("  1. Get a free API key at https://aistudio.google.com/apikey (a Google account is enough).\n"
-              "  2. Add this line to your shell's startup file (~/.bashrc on Linux, ~/.zshrc on macOS), with your key:\n"
-              "       export GEMINI_API_KEY='your-key'\n"
-              "  3. Open a new terminal and run this script again.")
+        print("  To add it (optional; setup goes on either way):\n"
+              "  1. Get a free API key at " + S.b("https://aistudio.google.com/apikey") + " (a Google account is "
+              "enough).")
+        if WINDOWS:
+            print("  2. In PowerShell, run this with your key in place of your-key:\n" +
+                  S.cmd('setx GEMINI_API_KEY "your-key"') +
+                  "\n  3. Close the window, open a new one, and run setup again.")
+        else:
+            print("  2. Add this line to your shell's startup file (~/.bashrc on Linux, ~/.zshrc on macOS), with "
+                  "your key:\n" + S.cmd("export GEMINI_API_KEY='your-key'") +
+                  "\n  3. Open a new terminal and run setup again.")
     return False
 
 
 def test(which):
-    print(f"Testing {X.NAMES[which]} ...", end=" ", flush=True)
+    """One short call. Busy servers aren't your setup's fault: the judge is kept (evals retry later)."""
+    print(f"Testing {X.NAMES[which]} (up to {2 if which == 'chatgpt' else 1} min; Ctrl+C skips) ...", end=" ", flush=True)
+    X.log(which, "connection test", "setup_judges.py")
     try:
-        reply = X.ask(which, TEST, "connection test", "setup_judges.py")
-    except X.ModelError as e:
-        print(f"FAILED: {str(e)[:300]}")
+        reply = (X.ask_chatgpt(TEST, timeout=120) if which == "chatgpt" else
+                 X.ask_gemini(TEST, timeout=25, retries=1))
+    except KeyboardInterrupt:
+        print("skipped")
         return False
-    print(f"ok (replied: {reply[:60]!r})")
+    except subprocess.TimeoutExpired:
+        print(S.warn("no reply in time; skipped. Try again later: " + LATER))
+        return False
+    except X.ModelError as e:
+        msg = str(e)
+        if any(f"HTTP {c}" in msg for c in (429, 500, 502, 503, 504)):
+            print(S.ok("kept") + f" ({X.NAMES[which]} is too busy right now to check the key; evals wait and retry. "
+                  f"To check it later: {LATER})")
+            return True
+        print(S.warn(f"failed: {msg.splitlines()[0][:200]}"))
+        return False
+    print(S.ok("ok") + f" (replied: {reply[:60]!r})")
     return True
 
 
 def main():
     check = "--check" in sys.argv
-    ready = {"chatgpt": setup_chatgpt(check), "gemini": setup_gemini(check)}
+    try:
+        ready = {"chatgpt": setup_chatgpt(check), "gemini": setup_gemini(check)}
+    except KeyboardInterrupt:
+        print("\nskipped the judges' setup (any time later: " + LATER + ")")
+        return
     if not check:
         for which in [w for w, ok in ready.items() if ok]:
             ready[which] = test(which)
     print()
     for which, ok in ready.items():
-        print(f"  {X.NAMES[which]:8} {'ready' if ok else 'not set up: a fresh Claude session will judge in its place'}")
+        print(f"  {X.NAMES[which]:8} " + (S.ok("ready") if ok else
+                                         "not set up: a fresh Claude session will judge in its place"))
     print("\nPrivacy: judges see the task text, its judge notes and the drafts. On free tiers, prompts may be used "
           "for training:\n  - Gemini's free API tier lets Google use prompts and replies to improve its models, "
           "and people may read them.\n    A paid key (billing enabled) doesn't.\n  - ChatGPT: turn off \"Improve "
@@ -88,9 +159,9 @@ def main():
           "judges you're comfortable with (judges in config.toml).")
     if any(ready.values()) and not check:
         print("\nThe workspace can use these logins too: Claude may ask ChatGPT and Gemini for second opinions during "
-              "your tasks\n(scripts/ask_model.py), without asking you first, even when it sends files from workspace/. "
-              "Every call is logged\nin workspace/logs/outside-models.md. To be asked first, run in the workspace: "
-              "python3 setup.py --ask-outside-models")
+              "your tasks\n(scripts/ask_model.py), " + S.b("without asking you first") + ", even when it sends files "
+              "from workspace/. Every call is logged\nin workspace/logs/outside-models.md. To be asked first, run in "
+              "the workspace:\n" + S.cmd("python3 setup.py --ask-outside-models"))
 
 
 if __name__ == "__main__":

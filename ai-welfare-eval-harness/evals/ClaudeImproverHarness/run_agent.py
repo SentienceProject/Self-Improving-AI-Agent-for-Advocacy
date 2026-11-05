@@ -125,6 +125,7 @@ def neutral_my(dst):
     my, text = dst / "my", eval_profile()
     for private in ("notify.json", ".followups-state.json"):   # whatever eval_profile says: no run may notify you
         (my / private).unlink(missing_ok=True)
+    shutil.rmtree(my / "imports", ignore_errors=True)   # whatever eval_profile says: never the person's imported chats
     if not H.CFG.get("autoeval", {}).get("eval_creator_memory", False):
         # The creator's AI-welfare research memory came partly from working on these tasks' topics (the Ohio bill
         # in T2, SB 1159 in F1), so it would hand runs answers and leak toward the held-out tasks.
@@ -1468,4 +1469,9 @@ def main():
 
 
 if __name__ == "__main__":
+    try:   # alarm words (STOPPED, FAILED, ...) in bold yellow when shown in a terminal
+        from style import highlight_stdout
+        highlight_stdout()
+    except ImportError:
+        pass
     main()

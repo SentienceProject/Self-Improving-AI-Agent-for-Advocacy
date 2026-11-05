@@ -2034,4 +2034,9 @@ def main():
 
 
 if __name__ == "__main__":
+    try:   # alarm words (STOPPED, FAILED, ...) in bold yellow when shown in a terminal
+        from style import highlight_stdout
+        highlight_stdout()
+    except ImportError:
+        pass
     main()
