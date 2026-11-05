@@ -140,7 +140,8 @@ python3 autoeval.py report 2026-10-20
     eval. When two similar versions of the workspace have both been evaluated and you've settled on one, the other's
     sessions can probably go. Claude Code deletes old sessions after `cleanupPeriodDays` (30 days by default). The
     workspace sets a long period for its own sessions, but a Claude Code session started elsewhere may go by your
-    user settings, so if you rely on peers, also set `"cleanupPeriodDays"` in `~/.claude/settings.json`.
+    user settings. The workspace's `setup.py` offers to set `"cleanupPeriodDays"` in `~/.claude/settings.json` for
+    you (it asks first, and keeps a backup of the file); or add it yourself.
   - **Combined report** (`results/auto/<eval>/combined.md`): ChatGPT and Gemini averaged as "outside", peers kept
     apart and never averaged in; a task where the two sides pick different top workspaces is "inconclusive".
   - **Fact checks:** where judges disagree (different tops, or `factcheck_gap` points apart on one workspace),
