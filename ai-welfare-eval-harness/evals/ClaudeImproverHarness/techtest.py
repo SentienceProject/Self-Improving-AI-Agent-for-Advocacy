@@ -268,7 +268,7 @@ def loose_json(text):
 
 
 def ro(path):
-    return f"Read(/{Path(path)}/**)"   # "//abs/path/**" = an absolute path in permission rules
+    return f"Read({H.rule_path(path)}/**)"   # "//abs/path/**" (//c/... on Windows) = an absolute path in rules
 
 
 # ---------------------------------------------------------------- 1. screen

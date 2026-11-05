@@ -693,7 +693,7 @@ def off_limits_settings(copy=None, src=None, copies_dir=None):
         dirs |= {str(d.resolve()) for d in Path(copies_dir).iterdir()
                  if d.is_dir() and (copy is None or d.resolve() != Path(copy).resolve())}
     dirs = sorted(dirs)
-    rules = [f"{tool}(/{d}/**)" for d in dirs for tool in ("Read", "Edit")]   # Read covers Glob and Grep
+    rules = [f"{tool}({H.rule_path(d)}/**)" for d in dirs for tool in ("Read", "Edit")]   # Read covers Glob, Grep
     return {"permissions": {"deny": rules}, "env": settings_env_secrets(),
             # no retrying a command outside the sandbox, where the read deny wouldn't hold
             "sandbox": {"enabled": True, "allowUnsandboxedCommands": False,

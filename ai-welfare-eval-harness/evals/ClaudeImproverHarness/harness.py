@@ -18,6 +18,17 @@ EVALS = (HERE / Path(CFG["paths"]["evals"]).expanduser()).resolve()  # relative 
 TASKS = EVALS / CFG["paths"].get("tasks", "tasks")   # the task set: tasks/ (AI welfare) or tasks-animals/
 
 
+def rule_path(p):
+    """An absolute path in a Claude Code permission rule: "//home/ana/x", or "//c/Users/Ana/x" on Windows. A single
+    "/" means relative to the settings file there, so "/" + "C:/Users/..." silently matched nothing on Windows.
+    (The workspace has the same helper, scripts/rule_paths.py.) Sandbox settings take ordinary paths instead."""
+    s = str(p).replace("\\", "/")
+    m = re.match(r"^([A-Za-z]):/*(.*)$", s)
+    if m:
+        s = f"/{m.group(1).lower()}/{m.group(2)}"
+    return "//" + s.lstrip("/")
+
+
 def cfg_path(p):
     """A path from config.toml: ~ expanded, and a relative one taken from this harness folder (so the defaults can
     point at the workspace beside the harness in the repository, wherever it's cloned)."""
