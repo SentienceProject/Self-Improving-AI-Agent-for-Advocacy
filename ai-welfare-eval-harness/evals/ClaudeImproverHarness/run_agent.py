@@ -125,6 +125,10 @@ def neutral_my(dst):
     my, text = dst / "my", eval_profile()
     for private in ("notify.json", ".followups-state.json"):   # whatever eval_profile says: no run may notify you
         (my / private).unlink(missing_ok=True)
+    if not H.CFG.get("autoeval", {}).get("eval_creator_memory", False):
+        # The creator's AI-welfare research memory came partly from working on these tasks' topics (the Ohio bill
+        # in T2, SB 1159 in F1), so it would hand runs answers and leak toward the held-out tasks.
+        (dst / "creator-notes" / "ai-welfare-memory.md").unlink(missing_ok=True)
     if text is None or not my.is_dir():
         return
     for p in my.iterdir():
