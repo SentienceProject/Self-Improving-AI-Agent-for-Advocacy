@@ -45,6 +45,7 @@ def install_node():
                                           "for permission)?"):
             r = subprocess.run(["winget", "install", "--id", "OpenJS.NodeJS.LTS", "-e",
                                 "--accept-source-agreements", "--accept-package-agreements"])
+            X.node_on_path()   # this window's PATH predates the install
             if r.returncode == 0 and find_npm():
                 print("  " + S.ok("Node.js installed."))
                 return find_npm()
@@ -82,6 +83,7 @@ def setup_chatgpt(check):
             print("  " + S.warn("The install failed; see npm's message above. If it's a permissions error, see\n"
                   "    https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"))
             return False
+        X.node_on_path()
         X.CODEX = X.find_codex()
         if not X.CODEX.exists():
             print("  " + S.warn("Installed, but this window can't see it yet: open a new terminal and run setup again."))
@@ -115,7 +117,23 @@ def setup_gemini(check):
 
 def test(which):
     """One short call. Busy servers aren't your setup's fault: the judge is kept (evals retry later)."""
-    print(f"Testing {X.NAMES[which]} (up to {2 if which == 'chatgpt' else 1} min; Ctrl+C skips) ...", end=" ", flush=True)
+    if which == "gemini":   # checks the key itself, in seconds, without using the small free quota
+        print("Checking the Gemini key (a few seconds; Ctrl+C skips) ...", end=" ", flush=True)
+        try:
+            r = X.check_gemini_key()
+        except KeyboardInterrupt:
+            print("skipped")
+            return False
+        if r == "ok":
+            print(S.ok("ok") + " (Google accepted the key)")
+            return True
+        if r.startswith("unreachable"):
+            print(S.ok("kept") + f" (couldn't reach Google just now: {r.split(': ', 1)[1]}; evals wait and retry. "
+                  f"To check it later: {LATER})")
+            return True
+        print(S.warn(r.split(": ", 1)[1] + ". Get a new key at https://aistudio.google.com/apikey and set it again."))
+        return False
+    print(f"Testing {X.NAMES[which]} (up to 2 min; Ctrl+C skips) ...", end=" ", flush=True)
     X.log(which, "connection test", "setup_judges.py")
     try:
         reply = (X.ask_chatgpt(TEST, timeout=120) if which == "chatgpt" else

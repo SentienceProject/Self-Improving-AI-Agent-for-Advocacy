@@ -13,6 +13,21 @@ HERE = Path(__file__).resolve().parent
 LOG = HERE / "external-queries-log.md"
 
 
+def node_on_path():
+    """Windows: right after Node.js is installed, this window's PATH doesn't have it yet, and the Codex CLI (a .cmd
+    that runs "node") fails with '"node" is not recognized'. Add Node's folders for this process and its children."""
+    if os.name != "nt":
+        return
+    have = os.environ.get("PATH", "").lower().split(os.pathsep)
+    for d in (Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs",
+              Path(os.environ.get("APPDATA", "~")) / "npm"):
+        if d.is_dir() and str(d).lower() not in have:
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
+node_on_path()
+
+
 def find_codex():
     """The Codex CLI: on PATH, or where npm puts it (also right after an install, before PATH is refreshed)."""
     for p in (shutil.which("codex"), Path.home() / ".npm-global" / "bin" / "codex",
@@ -89,6 +104,25 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
     if not reply:
         raise ModelError("gemini returned an empty reply")
     return reply
+
+
+def check_gemini_key(timeout=20):
+    """Checks the key without using any quota: lists the models it may use. Returns "ok", "bad: ..." or
+    "unreachable: ..." (busy, slow, or offline: not the key's fault)."""
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return "bad: GEMINI_API_KEY is not set"
+    req = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+                                 headers={"x-goog-api-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return "ok"
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            return f"bad: Google rejected the key (HTTP {e.code})"
+        return f"unreachable: HTTP {e.code}"
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        return f"unreachable: {type(e).__name__}"
 
 
 def ask_claude(prompt, model=None, timeout=1800, effort=None, budget_usd=3):
