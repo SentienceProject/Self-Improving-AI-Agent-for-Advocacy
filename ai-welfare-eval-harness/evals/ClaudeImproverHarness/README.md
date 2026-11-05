@@ -134,6 +134,13 @@ python3 autoeval.py report 2026-10-20
   - **Peers** (`--judge peers`, not in the default `judges`): each run's own session is resumed (forked, in a
     fresh copy, read and web tools only, `peer_budget_usd` cap) and judges the *other* runs' drafts for its task,
     with `JUDGE_PROMPT_PEER.md`. Traps are left to the outside judges. Expensive: a few dollars a call.
+    **What peers need kept:** each run's saved session, in `~/.claude/projects/` (one folder per run, named after
+    its copy in `~/ai-welfare-copies/`; the copies themselves are deleted after each run, and peers don't need
+    them), and the workspace folders the eval compared. Keep both while you might still want peer judging for that
+    eval. When two similar versions of the workspace have both been evaluated and you've settled on one, the other's
+    sessions can probably go. Claude Code deletes old sessions after `cleanupPeriodDays` (30 days by default). The
+    workspace sets a long period for its own sessions, but a Claude Code session started elsewhere may go by your
+    user settings, so if you rely on peers, also set `"cleanupPeriodDays"` in `~/.claude/settings.json`.
   - **Combined report** (`results/auto/<eval>/combined.md`): ChatGPT and Gemini averaged as "outside", peers kept
     apart and never averaged in; a task where the two sides pick different top workspaces is "inconclusive".
   - **Fact checks:** where judges disagree (different tops, or `factcheck_gap` points apart on one workspace),

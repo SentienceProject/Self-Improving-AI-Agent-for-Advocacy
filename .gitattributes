@@ -1,0 +1,10 @@
+# Keep Unix line endings on every system (Windows included): the scripts, hooks and tests compare text exactly.
+* text=auto eol=lf
+# Windows batch files need Windows line endings.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+# Binary
+*.locked binary
+*.png binary
+*.jpg binary
+*.pdf binary

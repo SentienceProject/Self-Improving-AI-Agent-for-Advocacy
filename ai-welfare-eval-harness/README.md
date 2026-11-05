@@ -92,7 +92,8 @@ twice, and if the two runs score more than `noise_threshold` apart, every planne
 uses both. Every `checkup_every_days` (60), when the workspace has changed, `techtest.py` also runs a checkup: the
 current workspace against the copy saved at the last checkup, on the held-out tasks, so changes that each passed
 but add up to worse get noticed. Those copies are kept in `~/ai-welfare-checkpoints/` as an archive the workspace
-can return to; they're full copies, drafts and `my/` files included, so delete old ones you don't need. The
+can return to; they're full copies, drafts and `my/` files included. Delete old ones once you won't restore or
+compare against them (peer judging doesn't use them; it needs the runs' saved sessions, see the tools README). The
 workspace gets only a checkup's verdict and means; the per-task scores stay here in `techtest/checkup/`, so the
 improvement loop never sees held-out scores task by task. The `[techtest]` section of `config.toml` has the
 settings, and the docstring in `techtest.py` has the details.
