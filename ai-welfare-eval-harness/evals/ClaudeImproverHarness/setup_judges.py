@@ -86,6 +86,11 @@ def main():
           "and people may read them.\n    A paid key (billing enabled) doesn't.\n  - ChatGPT: turn off \"Improve "
           "the model for everyone\" under Settings > Data controls.\nIf that matters for a task, keep it to "
           "judges you're comfortable with (judges in config.toml).")
+    if any(ready.values()) and not check:
+        print("\nThe workspace can use these logins too: Claude may ask ChatGPT and Gemini for second opinions during "
+              "your tasks\n(scripts/ask_model.py), without asking you first, even when it sends files from workspace/. "
+              "Every call is logged\nin workspace/logs/outside-models.md. To be asked first, run in the workspace: "
+              "python3 setup.py --ask-outside-models")
 
 
 if __name__ == "__main__":
