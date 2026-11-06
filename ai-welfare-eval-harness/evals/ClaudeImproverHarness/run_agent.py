@@ -126,6 +126,8 @@ def neutral_my(dst):
     for private in ("notify.json", ".followups-state.json"):   # whatever eval_profile says: no run may notify you
         (my / private).unlink(missing_ok=True)
     shutil.rmtree(my / "imports", ignore_errors=True)   # whatever eval_profile says: never the person's imported chats
+    (my / "backlog.md").unlink(missing_ok=True)          # no backlog list or runs in eval copies
+    shutil.rmtree(dst / "workspace" / "backlog", ignore_errors=True)
     if not H.CFG.get("autoeval", {}).get("eval_creator_memory", False):
         # The creator's AI-welfare research memory came partly from working on these tasks' topics (the Ohio bill
         # in T2, SB 1159 in F1), so it would hand runs answers and leak toward the held-out tasks.
@@ -391,7 +393,8 @@ def _fetch_usage():
     with urllib.request.urlopen(req, timeout=20) as r:
         d = json.load(r)
     return {"five_hour": d["five_hour"]["utilization"], "seven_day": d["seven_day"]["utilization"],
-            "resets_at": d["five_hour"]["resets_at"]}
+            "resets_at": d["five_hour"]["resets_at"],
+            "week_resets_at": (d.get("seven_day") or {}).get("resets_at")}   # used by the workspace's backlog
 
 
 def _retry_after(e):
@@ -451,7 +454,9 @@ def stream_usage(ev):
     try:
         return {"five_hour": round(w["five_hour"]["utilization"] * 100, 1),
                 "seven_day": round(w["seven_day"]["utilization"] * 100, 1),
-                "resets_at": datetime.datetime.fromtimestamp(w["five_hour"]["resetsAt"], datetime.UTC).isoformat()}
+                "resets_at": datetime.datetime.fromtimestamp(w["five_hour"]["resetsAt"], datetime.UTC).isoformat(),
+                "week_resets_at": (datetime.datetime.fromtimestamp(w["seven_day"]["resetsAt"], datetime.UTC).isoformat()
+                                   if w["seven_day"].get("resetsAt") else None)}
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
