@@ -72,7 +72,10 @@ evals/
 3. `cd evals/ClaudeImproverHarness && python3 setup_judges.py` sets up and tests the outside judges.
 4. To compare more than the workspace beside it, add folders to `[autoeval.workspaces]` in `config.toml`, and
    point `ethics_short` and `guardrails` at the files you want the judges to use. Pick the task set with
-   `[paths] tasks` (see "The task sets").
+   `[paths] tasks` (see "The task sets"), or for one command with `HARNESS_TASKS=tasks-animals`. Settings that
+   name your own folders can go in `config.local.toml` beside `config.toml` instead (same format, only the keys you
+   set change, never committed), including `off_limits`: folders of yours that hold earlier attempts at the tasks,
+   which no run may read.
 5. Try one task: `python3 autoeval.py all <eval-name> --only T2`.
 6. Working on a different cause? Write your own tasks (`evals/WRITING-TASKS.md`); the shipped ones are about AI
    welfare and animal advocacy.

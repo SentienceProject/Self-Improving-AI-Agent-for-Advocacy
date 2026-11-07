@@ -134,8 +134,12 @@ def neutral_my(dst):
         (dst / "creator-notes" / "ai-welfare-memory.md").unlink(missing_ok=True)
     if text is None or not my.is_dir():
         return
+    # [autoeval] eval_my_ethics = true keeps your own ethics files (my/ETHICS_SHORT.md, my/ETHICS_FULL.md), to test
+    # the workspace as you use it rather than with the defaults everyone gets. Point ethics_short at your file too,
+    # so the judges see the same ethics as the agents.
+    keep = MY_KEEP | ({"ETHICS_SHORT.md", "ETHICS_FULL.md"} if H.CFG.get("autoeval", {}).get("eval_my_ethics") else set())
     for p in my.iterdir():
-        if p.name not in MY_KEEP:
+        if p.name not in keep:
             shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
     (my / "profile.md").write_text(text, encoding="utf-8")
 
@@ -699,15 +703,38 @@ def off_limits_settings(copy=None, src=None, copies_dir=None):
         dirs.add(str((H.EVALS.parent.parent / ".git").resolve()))
     if src:
         dirs.add(str(Path(src).resolve()))
+    # [autoeval] off_limits: your own extra folders that hold earlier attempts at the tasks (old workspaces, notes)
+    dirs |= {str(H.cfg_path(p)) for p in H.CFG.get("autoeval", {}).get("off_limits", []) if H.cfg_path(p).exists()}
     if copies_dir and Path(copies_dir).is_dir():
         dirs |= {str(d.resolve()) for d in Path(copies_dir).iterdir()
                  if d.is_dir() and (copy is None or d.resolve() != Path(copy).resolve())}
     dirs = sorted(dirs)
     rules = [f"{tool}({H.rule_path(d)}/**)" for d in dirs for tool in ("Read", "Edit")]   # Read covers Glob, Grep
-    return {"permissions": {"deny": rules}, "env": settings_env_secrets(),
-            # no retrying a command outside the sandbox, where the read deny wouldn't hold
-            "sandbox": {"enabled": True, "allowUnsandboxedCommands": False,
-                        "filesystem": {"denyRead": dirs, "denyWrite": dirs}}}
+    # no retrying a command outside the sandbox, where the read deny wouldn't hold
+    sandbox = {"enabled": True, "allowUnsandboxedCommands": False,
+               "filesystem": {"denyRead": dirs, "denyWrite": dirs}}
+    # This sandbox object replaces the workspace's own excludedCommands (found 2026-11-05: in a hardened copy,
+    # corpus_search.py then ran sandboxed and failed with "attempt to write a readonly database"), so carry the copy's
+    # list over.
+    excluded = workspace_excluded_commands(copy)
+    if excluded:
+        sandbox["excludedCommands"] = excluded
+    return {"permissions": {"deny": rules}, "env": settings_env_secrets(), "sandbox": sandbox}
+
+
+def workspace_excluded_commands(copy):
+    """sandbox.excludedCommands from the copy's .claude/settings.json and settings.local.json (paths already point
+    at the copy)."""
+    out = []
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            s = json.loads((Path(copy) / ".claude" / name).read_text(encoding="utf-8")) if copy else {}
+        except (OSError, ValueError):
+            continue
+        for c in ((s.get("sandbox") or {}).get("excludedCommands") or []) if isinstance(s, dict) else []:
+            if isinstance(c, str) and c not in out:
+                out.append(c)
+    return out
 
 
 SECRET_NAME = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|AUTH)", re.I)

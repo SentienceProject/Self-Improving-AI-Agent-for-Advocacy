@@ -13,9 +13,25 @@ import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+
+def _merged(base, extra):
+    """base with extra laid over it: tables merge key by key; any other value in extra replaces base's."""
+    out = dict(base)
+    for k, v in extra.items():
+        out[k] = _merged(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+# config.local.toml (optional, never committed: see .gitignore) holds your own settings over config.toml, in the same
+# format: your workspaces' paths, copy exclusions, anything you'd rather keep out of a fork you publish.
 CFG = tomllib.loads((HERE / "config.toml").read_text(encoding="utf-8"))
+if (HERE / "config.local.toml").is_file():
+    CFG = _merged(CFG, tomllib.loads((HERE / "config.local.toml").read_text(encoding="utf-8")))
 EVALS = (HERE / Path(CFG["paths"]["evals"]).expanduser()).resolve()  # relative paths are relative to this folder
-TASKS = EVALS / CFG["paths"].get("tasks", "tasks")   # the task set: tasks/ (AI welfare) or tasks-animals/
+# The task set: tasks/ (AI welfare) or tasks-animals/. HARNESS_TASKS=tasks-animals (in the environment) picks one for
+# a single command without editing the config.
+TASKS = EVALS / (__import__("os").environ.get("HARNESS_TASKS") or CFG["paths"].get("tasks", "tasks"))
 
 
 def rule_path(p):

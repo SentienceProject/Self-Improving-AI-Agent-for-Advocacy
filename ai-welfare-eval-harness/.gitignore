@@ -14,5 +14,13 @@ improver_packets/
 evals/tasks*/dev/
 evals/tasks*/heldout/
 evals/tasks*/retired/
+evals/tasks*/heldout-drafts/
 evals/.unlocked-from
 evals/legacy-rubric-eval/improver_tasks/
+# Your own settings over config.toml (paths to your folders and the like).
+evals/ClaudeImproverHarness/config.local.toml
+# Earlier versions of a workspace kept to compare against (they hold your drafts and notes).
+archived-workspaces/
+# The private backup of your own files (scripts/private_backup.py in the workspace); it lives here because agents in
+# the workspace can't read this folder.
+.private-backup.git/

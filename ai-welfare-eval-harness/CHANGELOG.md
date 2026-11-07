@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `config.local.toml` beside `config.toml`: your own settings over the shared ones, never committed.
+- `[autoeval] off_limits`: extra folders no run may read (old workspaces holding earlier attempts at the tasks).
+- `[autoeval] eval_my_ethics`: keep your own `my/ETHICS_*.md` in eval copies (off by default).
+- `HARNESS_TASKS=tasks-animals` picks the task set for one command.
+- Fix: eval runs kept the workspace's sandbox exceptions (`excludedCommands`); in hardened mode, corpus search and
+  the Docker analyst failed inside eval copies without them.
+- The unlocked `evals/tasks*/heldout-drafts/` folder is ignored by git like the other task folders.
+
 ## 0.1.0 — 2026-11-03
 
 First public version, tested with Claude Code 2.1.317 on Linux (WSL2); macOS and Windows are untested. Ships in one

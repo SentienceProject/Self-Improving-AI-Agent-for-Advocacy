@@ -3,6 +3,8 @@
 # evals/legacy-rubric-eval/harness/config.toml.
 # Paths: ~ is your home folder, and a relative path is taken from this folder, so ../../../ai-welfare-workspace
 # is the workspace beside the harness in the repository.
+# Your own settings can go in config.local.toml beside this file instead (same format, only the keys you set change;
+# git ignores it), so your folders' paths stay out of anything you publish.
 
 [paths]
 # The frozen eval set (tasks/). The tools only READ it.
@@ -88,6 +90,12 @@ eval_profile = "eval_profile.md"
 # tasks' topics) is left out of every run's copy; true keeps it. creator-notes/LESSONS.md (how the workspace works)
 # stays in either way.
 eval_creator_memory = false
+# true keeps your own my/ETHICS_SHORT.md and my/ETHICS_FULL.md in every copy, to test the workspace with the ethics
+# you use instead of the defaults everyone gets. Then point ethics_short (above) at your my/ETHICS_SHORT.md as well.
+eval_my_ethics = false
+# Extra folders no run may read (with the eval tasks, judge notes and other copies, which are always off limits):
+# folders of your own that hold earlier attempts at the tasks, e.g. ["~/old-workspace"].
+off_limits = []
 # When an agent ends a turn waiting on an answer (clarifying questions, "which option?"), another Claude answers in
 # your place from the request and the agent's message only (never the judge notes). Up to max_answers per run.
 answerer_model = "opus"
