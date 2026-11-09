@@ -10,9 +10,7 @@ their own time are all welcome.
 - Commercial use is not allowed. A company that wants to use it needs separate permission from the author.
 
 **The request** (not a legal condition): please use it only for work that aims to improve the welfare of
-sentient or possibly sentient beings. Please don't use it to argue against their interests, to mass-produce
-outreach, or to strip out the guardrails and send unreviewed AI-written messages to real people. That kind of
-use can damage the credibility of the field it was built to help.
+sentient or possibly sentient beings. Please don't use it to argue against their interests. 
 
 If you're unsure whether your use fits, or you'd like permission for something the license doesn't cover, open an
 issue.
