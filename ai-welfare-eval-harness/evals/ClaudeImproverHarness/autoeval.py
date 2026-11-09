@@ -130,10 +130,18 @@ INSTRUCTION_GLOBS = AUTO.get("instruction_globs", ["CLAUDE.md", "GUARDRAILS.md",
                                                    ".mcp.json", "tools/**/*", "scripts/**/*"])
 
 
+def is_cache(rel):
+    """Python's bytecode caches: written whenever a script runs, so they're not instructions and a change to them
+    isn't a change to the workspace."""
+    rel = Path(rel)
+    return "__pycache__" in rel.parts or rel.suffix in (".pyc", ".pyo")
+
+
 def instruction_files(root):
     root = Path(root)
     return sorted({p for g in INSTRUCTION_GLOBS for p in root.glob(g)
-                   if p.is_file() and "settings.local" not in p.name and p.stat().st_size < 2_000_000})
+                   if p.is_file() and "settings.local" not in p.name and not is_cache(p.relative_to(root))
+                   and p.stat().st_size < 2_000_000})
 
 
 def snapshot_dir(ev, name):

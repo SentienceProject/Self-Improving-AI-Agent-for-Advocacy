@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- techtest waits while tech watch's check run is still reviewing a prepared change (it may change it).
+- Fix: Python bytecode caches (`__pycache__/`, `.pyc`) no longer count as instruction files. Running any workspace
+  script stopped a test after its baselines with "instruction files changed in the workspace".
+
 - `config.local.toml` beside `config.toml`: your own settings over the shared ones, never committed.
 - `[autoeval] off_limits`: extra folders no run may read (old workspaces holding earlier attempts at the tasks).
 - `[autoeval] eval_my_ethics`: keep your own `my/ETHICS_*.md` in eval copies (off by default).

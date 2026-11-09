@@ -18,7 +18,8 @@ For each proposal you asked to test (and, with [techtest] auto_test = true, nota
               IDs, kinds and skill tags ([techtest] task_skills) only, not their text.
   3. build    each arm is a copy of the workspace (~/ai-welfare-trials/). When tech watch has prepared the change
               (techwatch/staged/<id>/), there is one arm, "staged", with exactly that change applied, so what
-              passes is what gets applied. Otherwise an implementer Claude session makes each arm's change.
+              passes is what gets applied. (A proposal waits here while tech watch's check run is still
+              reviewing its prepared change.) Otherwise an implementer Claude session makes each arm's change.
               An arm that drops a safety rule from the settings fails. The edits are kept in build.json, so a
               missing copy is rebuilt the same way.
   4. baseline one fresh run of the unchanged workspace per task, made alongside the arms' runs. Another test's
@@ -131,6 +132,16 @@ def status_of(pid, evs):
     return st
 
 
+def check_pending(pid, evs):
+    """True while tech watch's check run is still reviewing (and may still change) pid's prepared change: testing
+    it now would test a bundle that's about to change. Workspaces without check runs never record check_pending."""
+    st = False
+    for e in evs:
+        if e.get("id") == pid and e.get("event") in ("staged", "check_pending", "checked"):
+            st = e["event"] == "check_pending"
+    return st
+
+
 def proposal_meta(pid):
     try:
         return json.loads((TW / "proposals" / pid / "meta.json").read_text(encoding="utf-8"))
@@ -168,6 +179,9 @@ def candidates():
     for d in sorted((TW / "proposals").glob("*/proposal.md")):
         pid = d.parent.name
         m, st = proposal_meta(pid), status_of(pid, evs)
+        if check_pending(pid, evs):
+            print(f"  {pid}: waits for tech watch's check of the prepared change", flush=True)
+            continue
         tst = state(pid) if (sdir(pid) / "state.json").exists() else None
         if pid in flagged and flagged[pid][0] > dropped_at.get(pid, -1):
             out.append((pid, "you flagged it" + (f": {flagged[pid][1]}" if flagged[pid][1] else "")))
@@ -768,6 +782,12 @@ def instruction_hashes(root):
     return {str(p.relative_to(root)): hashlib.sha1(p.read_bytes()).hexdigest() for p in A.instruction_files(root)}
 
 
+def without_caches(hashes):
+    """Hashes recorded before bytecode caches were left out, without them (so an old build or checkpoint compares
+    like a new one)."""
+    return {k: v for k, v in (hashes or {}).items() if not A.is_cache(k)}
+
+
 def snapshot(root):
     out = {}
     for p in root.rglob("*"):
@@ -877,6 +897,7 @@ def workspace_changes(b):
     then, now = b.get("workspace_files"), instruction_hashes(WS)
     if then is None:
         return []
+    then = without_caches(then)
     return sorted(k for k in set(then) | set(now) if then.get(k) != now.get(k))
 
 
@@ -1813,7 +1834,7 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
     if not cur:
         last = st["checkpoints"][-1]
         age = (datetime.date.today() - datetime.date.fromisoformat(last["date"])).days
-        if not now and not trial_due(last["date"]) and (age < every or last["files"] == instruction_hashes(WS)):
+        if not now and not trial_due(last["date"]) and (age < every or without_caches(last["files"]) == instruction_hashes(WS)):
             return
         if not checkup_tasks():
             return print("  checkup: no held-out tasks to run it on", flush=True)
