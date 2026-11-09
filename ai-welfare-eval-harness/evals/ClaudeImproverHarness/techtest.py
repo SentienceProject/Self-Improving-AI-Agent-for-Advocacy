@@ -16,15 +16,20 @@ For each proposal you asked to test (and, with [techtest] auto_test = true, nota
               design), and pre-registers the test: arms, 1-5 dev tasks fitted to the size of the change (a trap
               when the change could over-engineer, and always with 3+), success criterion. It sees the tasks'
               IDs, kinds and skill tags ([techtest] task_skills) only, not their text.
-  3. build    each arm is a copy of the workspace (~/ai-welfare-trials/). When tech watch has prepared the change
+  3. build    first one frozen copy of the workspace (~/ai-welfare-trials/<id>--baseline): the baseline runs in
+              it and every arm is a copy of it, so both sides start from the same workspace however long the
+              test takes. Editing the real workspace meanwhile doesn't stop the test; the report names the
+              instruction files changed since. A prepared change that rewrites a file edited after it was
+              prepared isn't built (the test would undo that edit): re-stage it.
+              Each arm is a copy of that frozen copy. When tech watch has prepared the change
               (techwatch/staged/<id>/), there is one arm, "staged", with exactly that change applied, so what
               passes is what gets applied. (A proposal waits here while tech watch's check run is still
               reviewing its prepared change.) Otherwise an implementer Claude session makes each arm's change.
               An arm that drops a safety rule from the settings fails. The edits are kept in build.json, so a
               missing copy is rebuilt the same way.
-  4. baseline one fresh run of the unchanged workspace per task, made alongside the arms' runs. Another test's
-              fresh baseline run of the same task can be borrowed if it was made with the current instruction
-              files within [techtest] baseline_borrow_hours.
+  4. baseline one fresh run of the unchanged (frozen) workspace per task, made alongside the arms' runs. Another
+              test's fresh baseline run of the same task can be borrowed if that test froze the same instruction
+              files, within [techtest] baseline_borrow_hours.
   5. run      autoeval's runner, one run per arm per task (two for the noise task, 6b): same budget monitor, 1.3x cap, and stop at 85% of your
               plan usage. A run that fails [techtest] max_run_attempts times stops the test with an error instead
               of retrying hourly.
@@ -799,13 +804,16 @@ def snapshot(root):
     return out
 
 
-def diff_against_workspace(trial, before, after):
-    """Unified diff of what the implementer changed, against the real workspace's files."""
+def diff_against_workspace(trial, before, after, base=None):
+    """Unified diff of what the implementer changed, against the files of base (the test's frozen copy of the
+    workspace; the real workspace for tests built before those existed), named by the real workspace's paths."""
     lines = []
+    src = Path(base) if base else WS
     for rel in sorted(set(before) | set(after)):
         if before.get(rel) == after.get(rel):
             continue
-        old = (WS / rel).read_text(encoding="utf-8", errors="replace") if rel in before and (WS / rel).exists() else ""
+        old = (src / rel).read_text(encoding="utf-8", errors="replace").replace(str(src), str(WS)) \
+            if rel in before and (src / rel).exists() else ""
         new = (trial / rel).read_text(encoding="utf-8", errors="replace").replace(str(trial), str(WS)) \
             if rel in after else ""
         lines += difflib.unified_diff(old.splitlines(True), new.splitlines(True), f"a/{rel}", f"b/{rel}")
@@ -816,6 +824,10 @@ def apply_bundle(trial, pid):
     """Apply tech watch's staged change to the copy exactly as review.py would (write/append inside the copy;
     manual and command steps are left out). Returns a list of problems."""
     bundle, problems = TW / "staged" / pid, []
+    try:   # what each target looked like when tech watch prepared the change (techwatch.py's record_bases)
+        bases = json.loads((TW / "state" / "stage-bases" / f"{pid}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        bases = {}
     for i, ch in enumerate((staged_manifest(pid) or {}).get("changes", []), 1):
         if ch.get("action") in ("manual", "command"):
             continue
@@ -827,6 +839,13 @@ def apply_bundle(trial, pid):
             continue
         if not src.is_relative_to(bundle.resolve()) or not src.is_file():
             problems.append(f"[{i}] source {ch.get('source')!r} is missing or outside the bundle")
+            continue
+        frozen = (base_copy(pid) or {}).get("targets", {})
+        if ch.get("action") == "write" and rel in bases and rel in frozen and frozen[rel] != bases[rel]:
+            # A write replaces the whole file, so if the file was edited after the change was prepared, the test
+            # would quietly undo that edit and compare more than the change. Not worth paying for: re-stage it.
+            problems.append(f"[{i}] {rel} changed after the change was prepared, so testing it would undo that "
+                            f"edit: re-stage it (techwatch.py stage {pid})")
             continue
         new = src.read_text(encoding="utf-8")
         if ch.get("action") == "append" and f.exists():
@@ -840,16 +859,45 @@ def apply_bundle(trial, pid):
     return problems
 
 
+def base_copy(pid):
+    """The test's frozen copy of the workspace ({"path", "files", "made"}), or None for a test built before these
+    existed (its baseline runs in the live workspace)."""
+    return jload(pid, "base.json")
+
+
+def make_base(pid):
+    """Freeze the workspace for this test: one copy that the baseline runs in and every arm is built from, so both
+    sides start from the same workspace however long the test takes, and editing the real workspace meanwhile
+    doesn't stop it (the report names what changed since)."""
+    TRIALS.mkdir(parents=True, exist_ok=True)
+    name = f"{pid}--baseline"
+    if (TRIALS / name).exists():
+        RA.remove_copy(TRIALS / name)
+    hashes = instruction_hashes(WS)
+    targets = {}   # sha256 of each file the prepared change writes, as frozen (apply_bundle compares with staging)
+    for ch in (staged_manifest(pid) or {}).get("changes", []):
+        if ch.get("action") == "write":
+            f = WS / str(ch.get("target", ""))
+            targets[str(ch.get("target", ""))] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else None
+    RA.make_copy(WS, TRIALS, name)
+    strip_trial(TRIALS / name)
+    info = {"path": str(TRIALS / name), "files": hashes, "targets": targets,
+            "made": datetime.datetime.now().isoformat(timespec="seconds")}
+    jsave(pid, "base.json", info)
+    return info
+
+
 def step_build(pid):
     plan = jload(pid, "plan.json")
     TRIALS.mkdir(parents=True, exist_ok=True)
-    built, hashes = [], instruction_hashes(WS)
+    base = make_base(pid)
+    built, hashes, src = [], base["files"], Path(base["path"])
     for arm in plan["arms"]:
         name = f"{pid}--{arm['name']}"
         trial = TRIALS / name
         if trial.exists():
             RA.remove_copy(trial)
-        RA.make_copy(WS, TRIALS, name)
+        RA.make_copy(src, TRIALS, name)
         strip_trial(trial)
         before = snapshot(trial)
         if arm["name"] == STAGED_ARM["name"] and staged_manifest(pid):
@@ -857,7 +905,7 @@ def step_build(pid):
             problems = apply_bundle(trial, pid)
             reply = "Tech watch's prepared change, applied exactly as staged."
             problems += settings_loosened(trial) + unread_code(pid, trial, before)
-            diff = diff_against_workspace(trial, before, snapshot(trial))
+            diff = diff_against_workspace(trial, before, snapshot(trial), src)
             (sdir(pid) / f"arm-{arm['name']}.diff").write_text(diff, encoding="utf-8")
             built.append({"name": arm["name"], "path": str(trial), "ok": bool(diff) and not problems,
                           "implementer_reply": reply, "cost_usd": 0, "diff_lines": diff.count("\n"),
@@ -876,7 +924,7 @@ def step_build(pid):
             spec = {"cannot": f"unreadable JSON: {e}"}
         problems = [f"cannot: {spec['cannot']}"] if spec.get("cannot") else apply_edits(trial, spec, arm["implement"])
         problems += settings_loosened(trial) + unread_code(pid, trial, before, implementer=True)
-        diff = diff_against_workspace(trial, before, snapshot(trial))
+        diff = diff_against_workspace(trial, before, snapshot(trial), src)
         (sdir(pid) / f"arm-{arm['name']}.diff").write_text(diff, encoding="utf-8")
         ok = bool(diff) and not problems
         if problems:
@@ -890,6 +938,15 @@ def step_build(pid):
               + "".join(f"\n    {x}" for x in problems), flush=True)
     jsave(pid, "build.json", built)
     return any(b["ok"] for b in built)
+
+
+def since_frozen(pid):
+    """Instruction files that changed in the real workspace since the test froze its copy ([] if none, or no copy)."""
+    base = base_copy(pid)
+    if not base:
+        return []
+    then, now = without_caches(base["files"]), instruction_hashes(WS)
+    return sorted(k for k in set(then) | set(now) if then.get(k) != now.get(k))
 
 
 def workspace_changes(b):
@@ -906,9 +963,11 @@ def rebuild_trial(pid, b):
     kept, its saved diff (applied with patch). Refuses if the result differs from the diff the build saved."""
     trial = Path(b["path"])
     saved = (sdir(pid) / f"arm-{b['name']}.diff").read_text(encoding="utf-8")
+    base = base_copy(pid)
+    src = Path(base["path"]) if base else WS
     if trial.exists():
         RA.remove_copy(trial)
-    RA.make_copy(WS, trial.parent, trial.name)
+    RA.make_copy(src, trial.parent, trial.name)
     strip_trial(trial)
     before = snapshot(trial)
     if (b.get("spec") or {}).get("bundle"):
@@ -917,12 +976,12 @@ def rebuild_trial(pid, b):
         problems = apply_edits(trial, b["spec"], next((a["implement"] for a in jload(pid, "plan.json")["arms"]
                                                        if a["name"] == b["name"]), ""))
     else:  # the diff names the workspace's paths; the copy's files name the copy
-        pat = re.compile(re.escape(str(WS)) + r"(?=[/\"'\s]|$)", re.M)
+        pat = re.compile(re.escape(str(WS)) + r"(?=[/\"'\s]|$)", re.M)   # (old builds only: no base copy)
         r = subprocess.run(["patch", "-p1", "--forward", "--batch", "--no-backup-if-mismatch"], cwd=trial,
                            input=pat.sub(str(trial), saved), capture_output=True, text=True)
         problems = [] if r.returncode == 0 else [f"patch failed: {(r.stdout + r.stderr).strip()[:500]}"]
     problems += settings_loosened(trial) + unread_code(pid, trial, before, implementer=not (b.get("spec") or {}).get("bundle"))
-    diff = diff_against_workspace(trial, before, snapshot(trial))
+    diff = diff_against_workspace(trial, before, snapshot(trial), base and src)
     if diff != saved:
         problems.append("the rebuilt copy's diff differs from the one saved at build time")
     if problems:
@@ -934,8 +993,27 @@ def rebuild_trial(pid, b):
 
 
 def ensure_trials(pid, rebuild=True):
-    """Before runs: the workspace hasn't changed since the arms were built, and (rebuild) every built arm's copy
-    exists (rebuilt if not)."""
+    """Before runs: the test's frozen copy of the workspace exists, and (rebuild) every built arm's copy exists
+    (rebuilt from the frozen copy if not). Changes to the real workspace since don't matter: both sides run on the
+    frozen copy. A test built before frozen copies existed still needs the workspace unchanged since its build."""
+    base = base_copy(pid)
+    if base:
+        if not Path(base["path"]).exists():
+            if without_caches(base["files"]) != instruction_hashes(WS):
+                raise RuntimeError(f"the test's frozen copy of the workspace ({base['path']}) is gone and the "
+                                   f"workspace has changed since, so it can't be made again. `techtest.py redo "
+                                   f"{pid} build` builds the test on the workspace as it is now")
+            info = make_base(pid)   # the same files, so the same base; arms rebuilt below from the new copy
+            info["made"] = base["made"]
+            jsave(pid, "base.json", info)
+            rebuild = True
+            for b in jload(pid, "build.json") or []:
+                if b["ok"] and Path(b["path"]).exists():
+                    RA.remove_copy(Path(b["path"]))
+        for b in jload(pid, "build.json") or []:
+            if b["ok"] and rebuild and not Path(b["path"]).exists():
+                rebuild_trial(pid, b)
+        return
     for b in jload(pid, "build.json") or []:
         if not b["ok"]:
             continue
@@ -964,7 +1042,8 @@ def arms_ws(pid):
     """Workspaces of this test, for autoeval: name -> path; and which of them still need runs."""
     built = [b for b in jload(pid, "build.json") if b["ok"]]
     base = jload(pid, "baseline.json")
-    ws = {"baseline": str(WS)}
+    frozen = base_copy(pid)
+    ws = {"baseline": frozen["path"] if frozen else str(WS)}
     if base["mode"] == "fresh" and base["earlier"]:
         ws["baseline-earlier"] = str(WS)
     ws.update({b["name"]: b["path"] for b in built})
@@ -979,9 +1058,11 @@ def arms_ws(pid):
 def borrow_baseline(pid):
     """Fill missing baseline runs from another test's fresh baseline run of the same task, so two tests don't pay
     for the same run: one made with the current setup (after the last instruction-file change) within [techtest]
-    baseline_borrow_hours, so it stays close in time to this test's arm runs."""
+    baseline_borrow_hours, so it stays close in time to this test's arm runs. With frozen copies, "the same
+    setup" means both tests froze the same instruction files."""
     tids = jload(pid, "plan.json")["tasks"]
     newest_change = max((p.stat().st_mtime for p in A.instruction_files(WS)), default=0)
+    mine = base_copy(pid)
     for t in tids:
         dst = H.run_dir(f"techtest-{pid}/baseline", t, 1)
         if H.reps(f"techtest-{pid}/baseline", t) >= 1:
@@ -993,8 +1074,13 @@ def borrow_baseline(pid):
                 continue
             m = A.meta(ev, "baseline", t, 1)
             started = when(m.get("started") or "1970-01-01")
-            if (Path(m.get("workspace", "")) == WS.resolve() and started.timestamp() > newest_change
-                    and not m.get("imported")
+            theirs = base_copy(ev.removeprefix("techtest-"))
+            if mine:   # the same frozen files, wherever and whenever each test froze them
+                same = bool(theirs) and without_caches(theirs["files"]) == without_caches(mine["files"])
+            else:      # an older test: both ran in the live workspace, after its last change
+                same = (not theirs and Path(m.get("workspace", "")) == WS.resolve()
+                        and started.timestamp() > newest_change)
+            if (same and not m.get("imported")
                     and (datetime.datetime.now() - started).total_seconds() <= 3600 * CFG.get("baseline_borrow_hours", 72)):
                 found.append((started, ev))
         if found:
@@ -1592,6 +1678,12 @@ def step_report(pid, why):
               "workspace (baseline). ≥: a lower bound (cost from a transcript).", ""] + table + [""] + extra
     L += review_lines
     P = public_header(pid, outcome or "in progress") + public_verdicts + [""] + noise_line(plan) + [""]
+    if drift := since_frozen(pid):
+        line = (f"Tested on the workspace as it was on {base_copy(pid)['made'][:16].replace('T', ' ')}. Changed "
+                f"in the workspace since (not part of this test): {', '.join(drift[:12])}"
+                + (f" and {len(drift) - 12} more" if len(drift) > 12 else "") + ".")
+        L += [line, ""]
+        P += [line, ""]
     if sha := next((b.get("bundle_sha256") for b in build if b.get("bundle_sha256")), None):
         P += [f"Bundle: {sha}", ""]   # review.py applies a change that passed only if it's still this exact bundle
     if public_table:
@@ -1619,8 +1711,8 @@ def step_report(pid, why):
         + ([f"Bundle: {sha}", ""] if sha else [])
         + ["(The scores and diffs are left out of this copy: they shared a phrase with a task's text. The full "
            "report is in the eval workspace.)"]) + "\n")
-    for b in build:  # the diffs and edits are kept (a missing copy is rebuilt from them); the copies aren't needed
-        if Path(b["path"]).exists():
+    for b in build + [base_copy(pid) or {"path": ""}]:   # the diffs and edits are kept; the copies aren't needed
+        if b["path"] and Path(b["path"]).exists():
             RA.remove_copy(Path(b["path"]))
     print(f"  report {pid}: {EVALS_OUT / (pid + '.md')}", flush=True)
     return True
@@ -2020,6 +2112,7 @@ def cmd_clean(a):
         pid = d.parent.name
         if pid in queued and not finished(state(pid)) and not state(pid).get("error"):
             keep |= {b["path"] for b in jload(pid, "build.json") or []}
+            keep |= {base_copy(pid)["path"]} if base_copy(pid) else set()
     old = [p for p in sorted(TRIALS.glob("*")) if p.is_dir() and str(p) not in keep]
     for p in old:
         print(("removing " if a.yes else "would remove ") + str(p))

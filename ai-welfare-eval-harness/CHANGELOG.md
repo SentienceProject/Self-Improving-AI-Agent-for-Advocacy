@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- techtest freezes the workspace when it builds a test: the baseline runs in that frozen copy and the arms are
+  built from it. Editing the workspace mid-test no longer stops the test with "instruction files changed in the
+  workspace"; the report says what changed since. A prepared change that would undo an edit made after it was
+  prepared is refused at build (re-stage it) instead of being tested.
 - techtest waits while tech watch's check run is still reviewing a prepared change (it may change it).
 - Fix: Python bytecode caches (`__pycache__/`, `.pyc`) no longer count as instruction files. Running any workspace
   script stopped a test after its baselines with "instruction files changed in the workspace".
