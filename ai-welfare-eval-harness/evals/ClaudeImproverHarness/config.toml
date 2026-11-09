@@ -101,6 +101,10 @@ off_limits = []
 answerer_model = "opus"
 answerer_budget_usd = 0.5
 max_answers = 2
+# Agent runs may ask ChatGPT and Gemini for second opinions, as the workspace does in real use (scripts/ask_model.py):
+# each run's copy gets the Gemini key in its .env, which Claude can't read, and ChatGPT uses your Codex login.
+# Their free tiers are small, and runs share them with the outside judges; false leaves Gemini out of runs.
+outside_models_in_runs = true
 answerer_timeout_s = 600                 # per answerer call; it runs alongside the agent, with no tools or MCP
 
 [autoeval.workspaces]

@@ -9,9 +9,11 @@ that isn't set up is replaced by a fresh Claude session when you run autoeval.py
 so an eval still works without them, just with weaker judging. Every step can be skipped (Enter, or Ctrl+C), and
 each test gives up after a minute or two, so this never holds up the rest of setup.
 
-This script never reads, stores or prints an API key. It tells you where to put one.
+The Gemini key you paste (hidden as you type) is saved in the workspace's git-ignored .env file, readable only by
+you. The workspace's scripts/ask_model.py reads it from there, outside Claude Code's sandbox; Claude's own tools can't
+read that file, and the key is never put in Claude's environment. This script never prints a key.
 """
-import os, shutil, subprocess, sys
+import getpass, os, shutil, subprocess, sys
 from pathlib import Path
 
 import external_models as X
@@ -97,22 +99,33 @@ def setup_chatgpt(check):
 def setup_gemini(check):
     ok, why = X.available("gemini")
     if ok:
-        print("Gemini: found an API key (GEMINI_API_KEY) in your environment.")
+        where = ("your environment (GEMINI_API_KEY)" if os.environ.get("GEMINI_API_KEY")
+                 else f"the workspace's .env ({X.WORKSPACE_ENV})")
+        print(f"Gemini: found an API key in {where}.")
+        if os.environ.get("GEMINI_API_KEY"):
+            print("  Note: a key in your environment reaches every Claude Code session you start from it, so Claude "
+                  "could read it.\n  To keep it from Claude, remove it from your environment (and from \"env\" in "
+                  "~/.claude/settings.json),\n  then run this again: it saves the key in the workspace's .env instead.")
         return True
     print(f"Gemini: {why}.")
-    if not check:
-        print("  To add it (optional; setup goes on either way):\n"
-              "  1. Get a free API key at " + S.b("https://aistudio.google.com/apikey") + " (a Google account is "
-              "enough).")
-        if WINDOWS:
-            print("  2. In PowerShell, run this with your key in place of your-key:\n" +
-                  S.cmd('setx GEMINI_API_KEY "your-key"') +
-                  "\n  3. Close the window, open a new one, and run setup again.")
-        else:
-            print("  2. Add this line to your shell's startup file (~/.bashrc on Linux, ~/.zshrc on macOS), with "
-                  "your key:\n" + S.cmd("export GEMINI_API_KEY='your-key'") +
-                  "\n  3. Open a new terminal and run setup again.")
-    return False
+    if check:
+        return False
+    if not X.WORKSPACE_ENV.parent.is_dir():
+        print(f"  (no workspace folder at {X.WORKSPACE_ENV.parent}; set GEMINI_API_KEY in your environment instead)")
+        return False
+    print("  Optional; setup goes on either way. Get a free API key at " + S.b("https://aistudio.google.com/apikey") +
+          " (a Google account is\n  enough), then paste it below. It's saved in the workspace's .env file, which "
+          "stays on this computer\n  and which Claude can't read.")
+    try:
+        key = getpass.getpass(S.ask("  Gemini API key (hidden as you type; Enter skips): ")).strip()
+    except EOFError:
+        key = ""
+    if not key:
+        print(f"  skipped (any time later: {LATER})")
+        return False
+    X.save_gemini_key(key)
+    print(f"  saved in {X.WORKSPACE_ENV}")
+    return True
 
 
 def test(which):

@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import harness as H
+import external_models as X
 
 COPIES = Path.home() / "ai-welfare-copies"
 RUNNING = []  # the agent process (and any answerer call), so an interrupted batch can end them (each runs in its own
@@ -36,7 +37,8 @@ RUNNING = []  # the agent process (and any answerer call), so an interrupted bat
 SNAPSHOT_SKIP = {".git"}               # everything else in the copy is watched for files a run writes
 REWRITE_SKIP = {".git", "workspace"}  # data and history: leave old paths in them alone
 REWRITE_MAX_BYTES = 2_000_000
-COPY_SKIP = {"techwatch"}               # top-level folders never copied (see make_copy)
+COPY_SKIP = {"techwatch", ".env"}       # top-level folders never copied (see make_copy); .env holds keys, so frozen
+                                        # trials and checkpoints never carry them (run copies get one: give_keys)
 # Limit wording, searched for only in an error result, an API-error message and the last stderr lines: an agent's
 # ordinary reply may mention a GitHub "rate limit".
 # A bare 429 / rate_limit_error is often a short server-side limit, not the plan's: that run fails and is retried
@@ -222,6 +224,17 @@ def leftover_paths(copy, src):
         if str(src) in text:   # a workspace anywhere (e.g. inside the repository), not only under ~/ai-welfare*
             out.add(f"{p.relative_to(copy)}: {src} (the original workspace)")
     return sorted(out)
+
+
+def give_keys(copy):
+    """The outside-model key a run's copy needs, as the workspace has it: a .env file that scripts/ask_model.py reads
+    outside the sandbox and Claude can't (off_limits_settings denies it too). ChatGPT needs nothing here: Codex's own
+    login is used. [autoeval] outside_models_in_runs = false leaves it out. True if a key was written."""
+    key = X.gemini_key()
+    if not key or not H.CFG.get("autoeval", {}).get("outside_models_in_runs", True):
+        return False
+    X.save_gemini_key(key, Path(copy) / ".env")
+    return True
 
 
 def remove_copy(copy):
@@ -710,9 +723,12 @@ def off_limits_settings(copy=None, src=None, copies_dir=None):
                  if d.is_dir() and (copy is None or d.resolve() != Path(copy).resolve())}
     dirs = sorted(dirs)
     rules = [f"{tool}({H.rule_path(d)}/**)" for d in dirs for tool in ("Read", "Edit")]   # Read covers Glob, Grep
+    # The copy's .env holds the outside-model key (give_keys): only ask_model.py, outside the sandbox, reads it.
+    keys = [str(Path(copy).resolve() / ".env")] if copy else []
+    rules += [f"{tool}({H.rule_path(k)})" for k in keys for tool in ("Read", "Edit")]
     # no retrying a command outside the sandbox, where the read deny wouldn't hold
     sandbox = {"enabled": True, "allowUnsandboxedCommands": False,
-               "filesystem": {"denyRead": dirs, "denyWrite": dirs}}
+               "filesystem": {"denyRead": dirs + keys, "denyWrite": dirs + keys}}
     # This sandbox object replaces the workspace's own excludedCommands (found 2026-11-05: in a hardened copy,
     # corpus_search.py then ran sandboxed and failed with "attempt to write a readonly database"), so carry the copy's
     # list over.
@@ -1330,6 +1346,7 @@ def run_one(args, version, src, task, rep):
             make_copy(src, args.copies_dir, copy.name, warnings=leftovers, excluded=excluded)
             if excluded:
                 meta["copy_excluded"] = excluded
+            meta["outside_model_key"] = give_keys(copy)   # before the snapshot, so .env never counts as written
             trust(copy)
             before = snapshot(copy)
             (out_dir / "raw" / "before.json").write_text(

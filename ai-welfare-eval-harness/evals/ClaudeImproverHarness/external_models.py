@@ -11,6 +11,46 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOG = HERE / "external-queries-log.md"
+# The Gemini key lives in the workspace's git-ignored .env (setup_judges.py saves it there), where the workspace's
+# scripts/ask_model.py finds it too, and Claude's tools can't read it. A GEMINI_API_KEY variable also works.
+WORKSPACE_ENV = Path(os.environ.get("AI_WELFARE_ENV_FILE") or HERE.parents[2] / "ai-welfare-workspace" / ".env")
+
+
+def read_env_file(path=None):
+    """KEY=value lines of a .env file ({} if it's missing or unreadable)."""
+    try:
+        text = Path(path or WORKSPACE_ENV).read_text(encoding="utf-8-sig")
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.removeprefix("export ").split("=", 1)
+            out[k.strip()] = v.strip().strip("'\"")
+    return out
+
+
+def gemini_key():
+    return os.environ.get("GEMINI_API_KEY") or read_env_file().get("GEMINI_API_KEY") or ""
+
+
+def save_gemini_key(key, path=None):
+    """Write GEMINI_API_KEY=key into the .env file (other lines kept), readable only by you."""
+    path = Path(path or WORKSPACE_ENV)
+    try:
+        lines = [l for l in path.read_text(encoding="utf-8-sig").splitlines()
+                 if l.strip().removeprefix("export ").split("=", 1)[0].strip() != "GEMINI_API_KEY"]
+    except OSError:
+        lines = []
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines + [f"GEMINI_API_KEY={key}"]) + "\n")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
 
 
 def node_on_path():
@@ -72,9 +112,9 @@ def ask_chatgpt(prompt, model=None, timeout=1800, effort=None):
 
 
 def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
-    key = os.environ.get("GEMINI_API_KEY")
+    key = gemini_key()
     if not key:
-        raise ModelError("GEMINI_API_KEY is not set")
+        raise ModelError("no Gemini key (GEMINI_API_KEY, or the workspace's .env)")
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model or GEMINI_MODEL}:generateContent",
         data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode(),
@@ -109,9 +149,9 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
 def check_gemini_key(timeout=20):
     """Checks the key without using any quota: lists the models it may use. Returns "ok", "bad: ..." or
     "unreachable: ..." (busy, slow, or offline: not the key's fault)."""
-    key = os.environ.get("GEMINI_API_KEY")
+    key = gemini_key()
     if not key:
-        return "bad: GEMINI_API_KEY is not set"
+        return "bad: no Gemini key is set"
     req = urllib.request.Request("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
                                  headers={"x-goog-api-key": key})
     try:
@@ -150,7 +190,7 @@ def available(which):
         r = subprocess.run([str(CODEX), "login", "status"], capture_output=True, text=True)
         return (True, "") if r.returncode == 0 else (False, "Codex isn't signed in (run: codex login)")
     if which == "gemini":
-        return (True, "") if os.environ.get("GEMINI_API_KEY") else (False, "GEMINI_API_KEY isn't set")
+        return (True, "") if gemini_key() else (False, "no Gemini key yet")
     if which == "claude":
         return (True, "") if shutil.which("claude") else (False, "Claude Code isn't on PATH")
     return True, ""

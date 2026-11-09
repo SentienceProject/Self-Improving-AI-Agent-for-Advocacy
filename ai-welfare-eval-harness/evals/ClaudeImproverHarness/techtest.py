@@ -244,15 +244,21 @@ def proposal_context(pid):
 
 # ---------------------------------------------------------------- headless Claude
 def env():
-    e = os.environ.copy()
-    e.pop("CLAUDECODE", None)
+    """The environment for helper Claude sessions: never the Gemini key (they don't need it)."""
+    e = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "GEMINI_API_KEY")}
     e["PATH"] = f"{Path.home() / '.local/bin'}:{Path.home() / '.npm-global/bin'}:{e.get('PATH', '')}"
-    if not e.get("GEMINI_API_KEY"):  # cron doesn't have it; Claude Code's settings do
-        try:
-            e["GEMINI_API_KEY"] = json.loads((Path.home() / ".claude/settings.json").read_text())["env"]["GEMINI_API_KEY"]
-        except Exception:
-            pass
     return e
+
+
+def load_gemini_key():
+    """For the outside reviewers, in this process only. external_models finds the key in the workspace's .env; an
+    older setup kept it in ~/.claude/settings.json "env" instead, which cron doesn't load."""
+    if X.gemini_key():
+        return
+    try:
+        os.environ["GEMINI_API_KEY"] = json.loads((Path.home() / ".claude/settings.json").read_text())["env"]["GEMINI_API_KEY"]
+    except Exception:
+        pass
 
 
 def claude(prompt, allowed, budget, label, model=None, effort=None):
@@ -333,7 +339,7 @@ def step_screen(pid, why):
                 reply, cost = claude(prompt + CRITIC_EXTRA.format(ws=WS), [ro(WS), "Glob", "Grep", "WebSearch"],
                                      CFG.get("critic_budget_usd", 1.5), f"critic-{pid}")
             else:
-                os.environ.setdefault("GEMINI_API_KEY", env().get("GEMINI_API_KEY", ""))
+                load_gemini_key()
                 model = A.AUTO.get(f"{who}_model") or None
                 effort = A.AUTO.get("chatgpt_effort") or None if who == "chatgpt" else None
                 reply, cost = X.ask(who, prompt, f"Tech-watch proposal screen: {pid} + CAPABILITIES.md",
@@ -1464,7 +1470,7 @@ def objections(pid, means, costs, arms):
                                context=proposal_context(pid), table=table, diffs=diffs, replies=replies,
                                runs=runs_phrase(plan), arm_names=", ".join(arms))
         try:
-            os.environ.setdefault("GEMINI_API_KEY", env().get("GEMINI_API_KEY", ""))
+            load_gemini_key()
             model = A.AUTO.get(f"{who}_model") or None
             effort = A.AUTO.get("chatgpt_effort") or None if who == "chatgpt" else None
             reply = X.ask(who, prompt, f"Tech-watch test result review: {pid}", "techtest objection", model, effort)

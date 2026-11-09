@@ -111,7 +111,10 @@ Safeguards worth knowing:
   a passed change only if its bundle still has that hash.
 - **`auto_test = true` needs `auto_since`** (a date), so switching it on doesn't test the whole backlog.
 - **Agent runs don't get your other keys.** Variables like `GEMINI_API_KEY`, `OPENAI_*` or `GITHUB_TOKEN`, from your
-  environment or your Claude Code settings' `env`, are blanked for the agent; Claude Code's own login is kept.
+  environment or your Claude Code settings' `env`, are blanked for the agent; Claude Code's own login is kept. To
+  ask ChatGPT and Gemini as it does in real use, each run's copy gets the Gemini key in a `.env` file that only the
+  workspace's `scripts/ask_model.py` reads, outside the sandbox (Claude can't); frozen trials and checkpoints never
+  hold it. `outside_models_in_runs = false` in config.toml leaves it out.
 - **Tests need the tasks unlocked** (`python3 evals/task_lock.py unlock`), and so does the check that keeps task text
   out of the results the workspace can read.
 
