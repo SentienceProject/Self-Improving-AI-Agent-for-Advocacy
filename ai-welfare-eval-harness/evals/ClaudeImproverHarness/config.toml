@@ -185,7 +185,10 @@ tick_warn_hours = 6                      # a tick holding the lock longer than t
 # The planner sees each dev task's ID, kind, budget and skill tags, never its text. The tags are in
 # evals/tasks/dev/SKILLS.toml (inside the locked archive); a [techtest.task_skills] table here overrides them.
 noise_threshold = 0.75                   # the noise check: if a workspace's two runs of the cheapest planned task
-                                         # score more than this apart, every planned task gets a second run
+                                         # score more than this apart, the plan's other cheap tasks get a second run
+repeat_max_cost_usd = 1.0                # only tasks whose typical run (median of past runs' cost) is at most this
+                                         # are ever run twice; runs barely vary and the big tasks (F2, N1, U2...)
+                                         # are expensive. No cheap task in the plan = no noise check
 checkup_every_days = 60                  # the checkup: compare the workspace with a checkpoint from this long ago on
                                          # the held-out tasks, when it has changed since (0 = off). Checkpoints are
                                          # kept in ~/ai-welfare-checkpoints/; a full checkup is ~2 runs per task

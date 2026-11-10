@@ -46,3 +46,6 @@ open an issue.
 [PolyForm Noncommercial 1.0.0](LICENSE): free for personal use, research, charities, education and public bodies;
 not for commercial use. Please also read [INTENDED-USE.md](INTENDED-USE.md): this is built to help beings whose
 welfare is neglected, and we ask that it not be used against their interests.
+
+## Disclaimer
+**Please use caution when using this workspace for social media.** Clearly AI-generated advocacy content can damage the credibility of the animal- and digital-minds-advocacy fields.

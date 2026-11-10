@@ -4,8 +4,15 @@
 
 - techtest freezes the workspace when it builds a test: the baseline runs in that frozen copy and the arms are
   built from it. Editing the workspace mid-test no longer stops the test with "instruction files changed in the
-  workspace"; the report says what changed since. A prepared change that would undo an edit made after it was
-  prepared is refused at build (re-stage it) instead of being tested.
+  workspace"; the report says what changed since. A prepared change to a file edited after it was prepared is
+  merged into the file (three-way, from the version it was prepared on, which tech watch now saves); only if the
+  edits overlap is it refused at build (re-stage it). review.py applies it the same way.
+- Only cheap tasks are run twice: the noise check uses a task whose typical run (the median of past runs' costs,
+  not its budget line) is at most `[techtest] repeat_max_cost_usd` ($1 by default), and a noisy result adds second
+  runs only for the plan's other cheap tasks. F2, N1, U2 and the like are never repeated unless you ask for a
+  deeper test. No cheap task in the plan means no noise check.
+- A test waiting for room in the 5-hour window for a big run no longer holds back the next tests' plan and build
+  steps (only their runs), so they freeze their copy of the workspace straight away instead of days later.
 - techtest waits while tech watch's check run is still reviewing a prepared change (it may change it).
 - Fix: Python bytecode caches (`__pycache__/`, `.pyc`) no longer count as instruction files. Running any workspace
   script stopped a test after its baselines with "instruction files changed in the workspace".

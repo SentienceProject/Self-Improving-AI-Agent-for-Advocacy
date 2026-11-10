@@ -20,7 +20,8 @@ For each proposal you asked to test (and, with [techtest] auto_test = true, nota
               it and every arm is a copy of it, so both sides start from the same workspace however long the
               test takes. Editing the real workspace meanwhile doesn't stop the test; the report names the
               instruction files changed since. A prepared change that rewrites a file edited after it was
-              prepared isn't built (the test would undo that edit): re-stage it.
+              prepared is merged into the file as it is now (three-way, from the version it was prepared on);
+              only if the edits overlap, or that version can't be found, is it not built: re-stage it.
               Each arm is a copy of that frozen copy. When tech watch has prepared the change
               (techwatch/staged/<id>/), there is one arm, "staged", with exactly that change applied, so what
               passes is what gets applied. (A proposal waits here while tech watch's check run is still
@@ -36,9 +37,11 @@ For each proposal you asked to test (and, with [techtest] auto_test = true, nota
   6. judge    ChatGPT compares the arms blind (autoeval's judge), twice in different orders. Every arm needs a
               score on every task, or the test stops with an error. Then ChatGPT and Gemini each read the scores,
               the judge's replies and the arm diffs and say whether there's a strong reason not to adopt an arm.
-  6b. noise  the plan's cheapest task is run twice for every arm and the baseline. If one workspace's two runs
-              score more than [techtest] noise_threshold apart, every planned task (up to 5) gets a second run too
-              and the verdict uses the mean of both. Each run is a fresh copy of the workspace, so a second run
+  6b. noise  the plan's cheapest task is run twice for every arm and the baseline, if a typical run of it costs
+              at most [techtest] repeat_max_cost_usd (measured from past runs, not the budget line); otherwise
+              there's no noise check. If one workspace's two runs score more than [techtest] noise_threshold
+              apart, the plan's other cheap tasks get a second run too (never the costly ones) and the verdict
+              uses the mean. Each run is a fresh copy of the workspace, so a second run
               never sees the first.
   7. report   verdict per arm, leaning toward adopting (the proposals are vetted before they get here):
               met, unless the arm's mean is more than [techtest] adopt_margin below the baseline's, a task is more
@@ -165,7 +168,7 @@ def flag_ts(pid, evs=None):
 
 
 def candidates():
-    """[(id, why)] to test, oldest first. A flag counts unless you rejected or removed the proposal after it; a test
+    """[(id, why)] to test, major proposals first, then oldest first. A flag counts unless you rejected or removed the proposal after it; a test
     already under way carries on when the proposal is approved or applied meanwhile, and stops if it's dropped."""
     evs = ledger()
     flagged, dropped_at = {}, {}
@@ -196,6 +199,9 @@ def candidates():
               and st in ("pending", "approved", "staged", "cannot_stage", "stage_failed")
               and str(m.get("created", pid[:10])) >= since):
             out.append((pid, f"{m.get('significance')} proposal"))
+    # Major changes go first (oldest first within each group): tick advances them before anything else, and while
+    # one is unfinished the others get no usage-spending steps (see cmd_tick).
+    out.sort(key=lambda x: proposal_meta(x[0]).get("significance") != "major")
     return out
 
 
@@ -518,11 +524,39 @@ def task_cost(task):
     return task.get("silent_cap") or RA.MONITOR.get("trap_cap_usd", 5)
 
 
+_TYPICAL = {}
+
+
+def typical_cost(tid, task):
+    """What a run of this task usually costs: the median of its finished runs' recorded costs (any eval or test),
+    else its budget line or cap. Budget lines understate some tasks (F2's $2.50 brief usually runs $2.4-4)."""
+    if tid not in _TYPICAL:
+        costs = []
+        for m in H.RUNS.glob(f"**/{tid}/**/meta.json"):
+            try:
+                meta = json.loads(m.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if meta.get("task") == tid and not meta.get("failed") and isinstance(meta.get("cost_usd"), (int, float)):
+                costs.append(float(meta["cost_usd"]))
+        costs.sort()
+        _TYPICAL[tid] = costs[len(costs) // 2] if costs else task_cost(task)
+    return _TYPICAL[tid]
+
+
+def repeatable(tid, task):
+    """Runs barely vary between repeats and cost a lot, so only cheap tasks are ever run twice for the noise
+    check: a typical run at most [techtest] repeat_max_cost_usd."""
+    return typical_cost(tid, task) <= CFG.get("repeat_max_cost_usd", 1.0)
+
+
 def set_reps(plan, tasks, pid=None):
-    """The noise check: the plan's cheapest task gets a second run in every workspace. A deeper test (review.py
-    test <id> --deeper, after an unclear result) runs every task deep_reps times instead."""
+    """The noise check: the plan's cheapest task gets a second run in every workspace, if it's cheap enough
+    (repeatable); otherwise there's no noise check and the report uses typical_run_sd. A deeper test (review.py
+    test <id> --deeper, after an unclear result, which you ask for) runs every task deep_reps times instead."""
     if plan.get("tasks"):
-        noise = min(plan["tasks"], key=lambda t: (task_cost(tasks[t]), plan["tasks"].index(t)))
+        cheap = [t for t in plan["tasks"] if repeatable(t, tasks[t])]
+        noise = min(cheap, key=lambda t: (typical_cost(t, tasks[t]), plan["tasks"].index(t))) if cheap else None
         plan["noise_task"] = noise
         deep = int(CFG.get("deep_reps", 3)) if pid and request_depth(pid) == "deeper" else 1
         plan["depth"] = "deeper" if deep > 1 else "standard"
@@ -847,13 +881,19 @@ def apply_bundle(trial, pid):
             problems.append(f"[{i}] source {ch.get('source')!r} is missing or outside the bundle")
             continue
         frozen = (base_copy(pid) or {}).get("targets", {})
-        if ch.get("action") == "write" and rel in bases and rel in frozen and frozen[rel] != bases[rel]:
-            # A write replaces the whole file, so if the file was edited after the change was prepared, the test
-            # would quietly undo that edit and compare more than the change. Not worth paying for: re-stage it.
-            problems.append(f"[{i}] {rel} changed after the change was prepared, so testing it would undo that "
-                            f"edit: re-stage it (techwatch.py stage {pid})")
-            continue
         new = src.read_text(encoding="utf-8")
+        if ch.get("action") == "write" and rel in bases and rel in frozen and frozen[rel] != bases[rel]:
+            # A write replaces the whole file, so if the file was edited after the change was prepared, writing it
+            # as-is would quietly undo that edit and the test would compare more than the change. Merge the
+            # change into the file as it is now (three-way, from the version it was prepared on); only if that
+            # version can't be found or the edits overlap does it need re-staging.
+            merged, why = merge_staged(pid, rel, bases[rel], f, new)
+            if merged is None:
+                problems.append(f"[{i}] {rel} changed after the change was prepared and {why}, so testing it "
+                                f"would undo that edit: re-stage it (techwatch.py stage {pid})")
+                continue
+            print(f"    [{i}] {rel} changed after the change was prepared; merged the change into it", flush=True)
+            new = merged
         if ch.get("action") == "append" and f.exists():
             old = f.read_text(encoding="utf-8")
             new = old + ("" if old.endswith("\n") or not old else "\n") + new
@@ -865,28 +905,119 @@ def apply_bundle(trial, pid):
     return problems
 
 
+def staging_version(pid, rel, sha):
+    """The text of rel as it was when tech watch prepared the change (sha256 sha), or None: from tech watch's saved
+    copy (stage-bases/<pid>/files/, newer stagings), else from the workspace's git history."""
+    saved = TW / "state" / "stage-bases" / pid / "files" / rel
+    if saved.is_file() and hashlib.sha256(saved.read_bytes()).hexdigest() == sha:
+        return saved.read_text(encoding="utf-8")
+    try:
+        top = subprocess.run(["git", "-C", str(WS), "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, check=True).stdout.strip()
+        path = (WS / rel).resolve().relative_to(Path(top).resolve()).as_posix()
+        commits = subprocess.run(["git", "-C", top, "log", "--format=%H", "-n", "60", "--", path],
+                                 capture_output=True, text=True, check=True).stdout.split()
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    for c in commits:
+        r = subprocess.run(["git", "-C", top, "show", f"{c}:{path}"], capture_output=True)
+        if r.returncode == 0 and hashlib.sha256(r.stdout).hexdigest() == sha:
+            return r.stdout.decode("utf-8")
+    return None
+
+
+def merge_staged(pid, rel, sha, f, staged):
+    """Three-way merge of a staged whole-file write into the copy's file f (the workspace as frozen for this test),
+    from the version it was prepared on. (merged text, None), or (None, why it couldn't)."""
+    base = staging_version(pid, rel, sha)
+    if base is None:
+        return None, "the version it was prepared on can't be found"
+    if not f.is_file():
+        return None, "it has since been deleted"
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for name, text in (("current", f.read_text(encoding="utf-8")), ("base", base), ("staged", staged)):
+            (Path(d) / name).write_text(text, encoding="utf-8")
+            paths.append(str(Path(d) / name))
+        r = subprocess.run(["git", "merge-file", "-p", *paths], capture_output=True)
+    if r.returncode != 0:
+        return None, ("the change and the later edit touch the same lines" if r.returncode > 0
+                      else f"git merge-file failed ({r.stderr.decode(errors='replace').strip()[:200]})")
+    return r.stdout.decode("utf-8"), None
+
+
 def base_copy(pid):
     """The test's frozen copy of the workspace ({"path", "files", "made"}), or None for a test built before these
     existed (its baseline runs in the live workspace)."""
     return jload(pid, "base.json")
 
 
+def applied_first(pid, evs=None):
+    """{target: the file as it was before (a Path to tech watch's backup), or None if it didn't exist} for a change
+    tech watch applied to the workspace BEFORE this test (review.py's apply_first); {} otherwise. The frozen copy
+    has these undone, so the baseline is the workspace without the change and the arm is the workspace with it."""
+    evs = ledger() if evs is None else evs
+    req = next((e for e in reversed(evs) if e.get("id") == pid and e.get("event") == "test_requested"), {})
+    last = next((e["event"] for e in reversed(evs) if e.get("id") == pid
+                 and e.get("event") in DECISIVE + ("auto_applied",)), None)
+    if not req.get("applied_first") or last not in ("applied", "auto_applied"):
+        return {}
+    try:
+        entries = json.loads((TW / "staged" / pid / "applied.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise RuntimeError(f"{pid} was applied before its test, but its record of what was applied is missing, so "
+                           "the baseline can't be made without it")
+    out = {}
+    for a in entries:
+        bk = Path(a["backup"])
+        absent = bk.with_suffix(bk.suffix + ".absent")
+        if not (absent.exists() or bk.is_file()):
+            raise RuntimeError(f"{pid} was applied before its test, but the backup of {a['target']} is missing")
+        out[str(a["target"])] = None if absent.exists() else bk
+    return out
+
+
+def frozen_hashes(undo):
+    """instruction_hashes of the workspace as a frozen copy will be: with a change applied before its test undone."""
+    hashes = instruction_hashes(WS)
+    for rel, bk in undo.items():
+        if rel in hashes:
+            if bk is None:
+                del hashes[rel]
+            else:
+                hashes[rel] = hashlib.sha1(bk.read_bytes()).hexdigest()
+    return hashes
+
+
 def make_base(pid):
     """Freeze the workspace for this test: one copy that the baseline runs in and every arm is built from, so both
     sides start from the same workspace however long the test takes, and editing the real workspace meanwhile
-    doesn't stop it (the report names what changed since)."""
+    doesn't stop it (the report names what changed since). A change already applied before its test is undone in
+    the copy."""
     TRIALS.mkdir(parents=True, exist_ok=True)
     name = f"{pid}--baseline"
     if (TRIALS / name).exists():
         RA.remove_copy(TRIALS / name)
-    hashes = instruction_hashes(WS)
+    undo = applied_first(pid)
+    hashes = frozen_hashes(undo)
     targets = {}   # sha256 of each file the prepared change writes, as frozen (apply_bundle compares with staging)
     for ch in (staged_manifest(pid) or {}).get("changes", []):
         if ch.get("action") == "write":
-            f = WS / str(ch.get("target", ""))
-            targets[str(ch.get("target", ""))] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else None
+            rel = str(ch.get("target", ""))
+            f = undo[rel] if rel in undo else WS / rel
+            targets[rel] = hashlib.sha256(f.read_bytes()).hexdigest() if f is not None and f.is_file() else None
     RA.make_copy(WS, TRIALS, name)
     strip_trial(TRIALS / name)
+    for rel, bk in undo.items():
+        f = TRIALS / name / rel
+        if bk is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bk, f)
+    if undo:
+        print(f"  build {pid}: it was applied before this test, so the baseline copy has it undone "
+              f"({', '.join(undo)})", flush=True)
     info = {"path": str(TRIALS / name), "files": hashes, "targets": targets,
             "made": datetime.datetime.now().isoformat(timespec="seconds")}
     jsave(pid, "base.json", info)
@@ -1005,7 +1136,7 @@ def ensure_trials(pid, rebuild=True):
     base = base_copy(pid)
     if base:
         if not Path(base["path"]).exists():
-            if without_caches(base["files"]) != instruction_hashes(WS):
+            if without_caches(base["files"]) != frozen_hashes(applied_first(pid)):
                 raise RuntimeError(f"the test's frozen copy of the workspace ({base['path']}) is gone and the "
                                    f"workspace has changed since, so it can't be made again. `techtest.py redo "
                                    f"{pid} build` builds the test on the workspace as it is now")
@@ -1211,13 +1342,20 @@ def step_noise(pid):
     limit = CFG.get("noise_threshold", 0.75)
     noisy = bool(diffs) and max(diffs.values()) > limit
     plan["noise"] = {"task": nt, "diffs": diffs, "threshold": limit, "noisy": noisy}
-    if noisy:
-        cur = plan.get("reps") or {}
-        plan["reps"] = {t: max(2 if i < 5 else 1, cur.get(t, 1)) for i, t in enumerate(plan["tasks"])}
+    cur = plan.get("reps") or {}
+    tasks = H.load_tasks()
+    # noisy: second runs for the other cheap tasks only; expensive ones stay at one run (a re-run costs a lot and
+    # rarely changes the score much)
+    more = [t for t in plan["tasks"] if noisy and cur.get(t, 1) < 2 and t in tasks and repeatable(t, tasks[t])]
+    plan["noise"]["rerun"] = more
+    for t in more:
+        cur[t] = 2
+    plan["reps"] = cur
     jsave(pid, "plan.json", plan)
     print(f"  noise {pid}: {nt} scored {diffs} apart between two runs (threshold {limit:g})"
-          + ("; running every task twice" if noisy else "; one run per task is enough"), flush=True)
-    return not noisy
+          + ((f"; running {', '.join(more)} twice too" if more else "; no other cheap task to run twice")
+             if noisy else "; one run per task is enough"), flush=True)
+    return not more
 
 
 def noise_line(plan):
@@ -1228,8 +1366,12 @@ def noise_line(plan):
     if worst is None:
         return [f"**Noise check:** {n['task']} couldn't be compared between its two runs."]
     return [f"**Noise check:** the same workspace's two runs of {n['task']} scored up to {worst:.2f} apart "
-            f"(threshold {n['threshold']:g}). " + ("Every task was run twice, and scores are the mean of both runs."
-                                                   if n["noisy"] else "One run per task was kept for the rest.")]
+            f"(threshold {n['threshold']:g}). " + (
+                (f"{', '.join(n['rerun'])} were run twice too (scores are the mean); costlier tasks kept one run."
+                 if n.get("rerun") else "No other task was cheap enough to run twice.")
+                if n.get("rerun") is not None and n["noisy"] else
+                "Every task was run twice, and scores are the mean of both runs." if n["noisy"]
+                else "One run per task was kept for the rest.")]
 
 
 # ---------------------------------------------------------------- 7. report
@@ -1758,7 +1900,9 @@ def advance(pid, why, stop, blocked=False):
             continue
         if st.get("outcome") in ENDED_EARLY and step != "report":
             continue  # ended early (screened out, untestable, build failed): straight to the report
-        if step in USAGE_STEPS and (blocked or not plan_ok(stop)):
+        # blocked (an earlier test is waiting for room for its runs) holds back only the runs, so they keep their
+        # turn; the cheap steps go ahead, so this test freezes its copy of the workspace now rather than days later
+        if step in USAGE_STEPS and ((blocked and step == "run") or not plan_ok(stop)):
             save_state(pid, st)
             return False
         print(f"[{datetime.datetime.now():%H:%M}] {pid}: {step}", flush=True)
@@ -1813,7 +1957,11 @@ def cmd_tick(a):
     # Agent runs never overlap an eval batch's: autoeval's runner takes a shared lock (step_run then waits).
     todo = [(p, w) for p, w in candidates() if not a.only or p == a.only]
     blocked = False  # once usage is out, later proposals still get their judge and report steps
+    major_waiting = False   # a major test still to finish: the others wait for it (judge and report steps aside)
     for pid, why in todo:
+        major = proposal_meta(pid).get("significance") == "major"
+        if not major and major_waiting:
+            blocked = True
         st, ft = state(pid), flag_ts(pid)
         if st.get("error"):
             if ft <= st.get("flag_ts", ""):
@@ -1844,6 +1992,8 @@ def cmd_tick(a):
         try:
             if not advance(pid, why, a.stop_at, blocked):
                 blocked = True
+            if major and not finished(state(pid)) and not state(pid).get("error"):
+                major_waiting = True
         except RA.UsageLimit as e:
             print(f"  {pid}: stopped: {e}. The next tick after the reset resumes.", flush=True)
             blocked = True
