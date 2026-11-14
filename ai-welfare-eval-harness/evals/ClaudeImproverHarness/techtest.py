@@ -347,7 +347,7 @@ def step_screen(pid, why):
             else:
                 load_gemini_key()
                 model = A.AUTO.get(f"{who}_model") or None
-                effort = A.AUTO.get("chatgpt_effort") or None if who == "chatgpt" else None
+                effort = A.AUTO.get(f"{who}_effort") or None if who in ("chatgpt", "gemini") else None
                 reply, cost = X.ask(who, prompt, f"Tech-watch proposal screen: {pid} + CAPABILITIES.md",
                                     "techtest screen", model, effort), 0
             voters[who] = {"verdict": verdict(reply), "reply": reply, "cost_usd": cost}
@@ -1614,7 +1614,7 @@ def objections(pid, means, costs, arms):
         try:
             load_gemini_key()
             model = A.AUTO.get(f"{who}_model") or None
-            effort = A.AUTO.get("chatgpt_effort") or None if who == "chatgpt" else None
+            effort = A.AUTO.get(f"{who}_effort") or None if who in ("chatgpt", "gemini") else None
             reply = X.ask(who, prompt, f"Tech-watch test result review: {pid}", "techtest objection", model, effort)
         except Exception as e:
             reviewers[who] = {"reply": f"(no answer: {e})", "readable": False}

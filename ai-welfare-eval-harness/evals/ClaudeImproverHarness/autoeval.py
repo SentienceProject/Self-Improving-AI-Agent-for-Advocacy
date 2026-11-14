@@ -1052,7 +1052,7 @@ def cmd_judge(a, tasks, ids):
         print(f"note: {', '.join(differ)} use(s) a different ETHICS_SHORT.md than {ethics_path}, which the judge gets")
     guardrails = H.rd(H.cfg_path(AUTO.get("guardrails", "../../../ai-welfare-workspace/GUARDRAILS.md"))).strip()
     model = a.judge_model or AUTO.get(f"{a.judge}_model") or None
-    effort = AUTO.get("chatgpt_effort") or None if a.judge == "chatgpt" else None
+    effort = AUTO.get(f"{a.judge}_effort") or None if a.judge in ("chatgpt", "gemini") else None
     out = RESULTS / a.eval / a.judge
     todo, why, stale = [], Counter(), stale_dir(out)
     if a.judge == "peers":  # traps are judged by the outside judges only

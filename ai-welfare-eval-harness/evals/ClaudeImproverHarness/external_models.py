@@ -78,7 +78,10 @@ def find_codex():
 
 
 CODEX = find_codex()
-GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_MODEL = "gemini-4-hydrogen"
+# Thinking level sent with every Gemini call unless one is passed (config.toml gemini_effort), so a change to
+# Google's default can't quietly change the judge. "" = the model's own default.
+GEMINI_EFFORT = "high"
 
 
 class ModelError(Exception):
@@ -115,9 +118,12 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
     key = gemini_key()
     if not key:
         raise ModelError("no Gemini key (GEMINI_API_KEY, or the workspace's .env)")
+    level = effort or GEMINI_EFFORT
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model or GEMINI_MODEL}:generateContent",
-        data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode(),
+        data=json.dumps({"contents": [{"parts": [{"text": prompt}]}],
+                         **({"generationConfig": {"thinkingConfig": {"thinkingLevel": level}}} if level else {})
+                         }).encode(),
         headers={"Content-Type": "application/json", "x-goog-api-key": key},
     )
     for attempt in range(retries + 1):
@@ -202,6 +208,7 @@ NAMES = {"chatgpt": "ChatGPT", "gemini": "Gemini", "claude": "Claude (stand-in)"
 
 def ask(which, prompt, summary, purpose, model=None, effort=None):
     log(f"{which} ({model or 'default model'}{', ' + effort + ' effort' if effort else ''})" if which == "chatgpt"
-        else f"claude ({model or 'opus'}, stand-in judge)" if which == "claude" else f"{model or GEMINI_MODEL} (API)",
+        else f"claude ({model or 'opus'}, stand-in judge)" if which == "claude"
+        else f"{model or GEMINI_MODEL} (API{', ' + (effort or GEMINI_EFFORT) + ' thinking' if effort or GEMINI_EFFORT else ''})",
         summary, purpose)
     return ASK[which](prompt, model, effort=effort)

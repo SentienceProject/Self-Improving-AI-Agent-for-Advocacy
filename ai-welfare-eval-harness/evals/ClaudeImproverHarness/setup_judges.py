@@ -150,7 +150,7 @@ def test(which):
     X.log(which, "connection test", "setup_judges.py")
     try:
         reply = (X.ask_chatgpt(TEST, timeout=120) if which == "chatgpt" else
-                 X.ask_gemini(TEST, timeout=25, retries=1))
+                 X.ask_gemini(TEST, timeout=25, effort="low", retries=1))   # low: a connection test, not a judgment
     except KeyboardInterrupt:
         print("skipped")
         return False

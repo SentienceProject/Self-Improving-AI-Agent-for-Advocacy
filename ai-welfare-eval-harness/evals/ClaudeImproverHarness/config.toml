@@ -35,7 +35,11 @@ factcheck_budget_usd = 3
 factcheck_timeout_s = 1800
 chatgpt_model = ""                       # "" = Codex's default model
 chatgpt_effort = "high"                  # Codex reasoning effort for judging: low | medium | high | "" = default
-gemini_model = "gemini-3.8-flash"
+gemini_model = "gemini-4-hydrogen"
+gemini_effort = "high"                   # Gemini thinking level: low | medium | high | xhigh | "" = model default.
+                                         # Set so a change to Google's default can't quietly change the judge.
+                                         # Hydrogen judges about 1 point lower than 3.8 Flash did and spreads
+                                         # its scores more; compare Gemini scores only within one judge model
 # An outside judge that isn't set up (no Codex sign-in, no GEMINI_API_KEY) is replaced by a fresh, tool-less Claude
 # session, so an eval is still judged; the report says so. "" = no stand-in (that judge is skipped).
 # setup_judges.py sets up ChatGPT and Gemini. Free tiers are enough (see README.md, "Judges", for the privacy catch).
