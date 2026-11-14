@@ -679,16 +679,30 @@ def kill_group(proc, sig=signal.SIGKILL):
         return False
 
 
-def probe_denied(ev, probe_ids):
-    """True if this event shows the sandbox preflight probe denied (Bash then stays locked all run). probe_ids
-    collects the ids of probe calls seen so far."""
+def probe_denied(ev, probe):
+    """True if this event shows the sandbox preflight probe denied (Bash then stays locked all run). probe tracks
+    the probe calls seen so far: {"seq": [tool_use ids in order], "last_pass": index of the latest call that passed}.
+    The final result's permission_denials lists every denial of the whole run, so a denied probe call (say, a hook
+    refusing `sandbox_probe.sh | grep ...` because it isn't the exact command) only counts if no probe passed after
+    it; otherwise a run that re-ran the probe correctly and finished would be marked failed."""
     for c in ev.get("message", {}).get("content", []) if isinstance(ev.get("message"), dict) else []:
         if isinstance(c, dict) and c.get("type") == "tool_use" and "sandbox_probe" in json.dumps(c.get("input")):
-            probe_ids.add(c.get("id"))
-        elif (isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in probe_ids
-              and CLASSIFIER in json.dumps(c.get("content"))):
-            return True
-    return any("sandbox_probe" in json.dumps(d.get("tool_input")) for d in ev.get("permission_denials") or [])
+            probe["seq"].append(c.get("id"))
+        elif isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in probe["seq"]:
+            text = json.dumps(c.get("content"))
+            if "PROBE RESULT PASS" in text:
+                probe["last_pass"] = probe["seq"].index(c.get("tool_use_id"))
+            elif CLASSIFIER in text:
+                return True
+    return any(probe_unredeemed(d, probe) for d in ev.get("permission_denials") or [])
+
+
+def probe_unredeemed(denial, probe):
+    """True if this denial is of a probe call that no later probe pass made up for."""
+    if "sandbox_probe" not in json.dumps(denial.get("tool_input")):
+        return False
+    i = probe["seq"].index(denial.get("tool_use_id")) if denial.get("tool_use_id") in probe["seq"] else len(probe["seq"])
+    return i > probe["last_pass"]
 
 
 def track_background(ev, bg):
@@ -826,7 +840,7 @@ def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=Non
     # A started run may go on past the line that stops new runs, up to stop_mid_run_plan_pct.
     mid_line = max(getattr(args, "stop_at_plan_pct", 0) or 0, MONITOR["stop_mid_run_plan_pct"] or 0) \
         if getattr(args, "stop_at_plan_pct", 0) else 0
-    probe_ids, probe_stop = set(), False
+    probe_state, probe_stop = {"seq": [], "last_pass": -1}, False
     bg, seq = {}, 0  # background tasks running; count of agent activity events (a reply judged before one is stale)
     usage, usage_at, shared_at = None, 0, 0  # the latest rate_limit_event reading
     err_path = out_dir / "raw" / "stderr.txt"
@@ -926,7 +940,7 @@ def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=Non
                     kill_reason = "usage limit"
                     print(f"    [{label}] STOPPED: usage limit ({limit[:120]})", flush=True)
                     break  # nudging it on would only fail again
-                if probe_denied(ev, probe_ids):
+                if probe_denied(ev, probe_state):
                     probe_stop, kill_reason = True, "sandbox probe denied"
                     print(f"    [{label}] STOPPED: the sandbox preflight probe was denied, so Bash stays locked", flush=True)
                     break
@@ -1104,12 +1118,14 @@ def summarise(transcript):
 def env_check(transcript, denials):
     """Signs the run's environment, not the agent, limited it: calls the auto-mode classifier denied, and whether the
     sandbox preflight probe was denied (then Bash stays locked for the whole run)."""
-    uses, blocked = {}, []
+    uses, blocked, probe_state = {}, [], {"seq": [], "last_pass": -1}
     for line in transcript.read_text(encoding="utf-8").splitlines():
         try:
             ev = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if ev.get("type") != "result":
+            probe_denied(ev, probe_state)   # only to track probe calls and passes, for the denials below
         for c in ev.get("message", {}).get("content", []) if isinstance(ev.get("message"), dict) else []:
             if not isinstance(c, dict):
                 continue
@@ -1122,7 +1138,8 @@ def env_check(transcript, denials):
     probe = lambda d: "sandbox_probe" in json.dumps(d.get("tool_input"))
     return {"classifier_denials": [f"{d['tool_name']} ({d['reason'] or '?'}): {json.dumps(d['tool_input'])[:160]}"
                                    for d in blocked],
-            "probe_denied": any(probe(d) for d in [*blocked, *(denials or [])])}
+            "probe_denied": any(probe(d) for d in blocked) or any(probe_unredeemed(d, probe_state)
+                                                                     for d in denials or [])}
 
 
 # ---------------------------------------------------------------- collecting results
