@@ -1068,12 +1068,14 @@ def cmd_judge(a, tasks, ids):
                 if f.exists():
                     old = json.loads(f.read_text())
                     saw_own = [old.get("judged_by")] in [[[x["workspace"], x["rep"]]] for x in old.get("slots", [])]
+                    same_judge = (old.get("model"), old.get("effort")) == (model, effort)   # e.g. a new gemini_model
                     if old.get("group") == key and old.get("parsed") and not a.force \
-                            and old.get("judge_version", 1) == JUDGE_VERSION and not saw_own:
+                            and old.get("judge_version", 1) == JUDGE_VERSION and not saw_own and same_judge:
                         continue
                     why["forced" if a.force else "drafts or judge input changed" if old.get("group") != key
                         else "earlier call failed" if not old.get("parsed") else "it was shown its own draft"
-                        if saw_own else "judge prompt changed"] += 1
+                        if saw_own else "judge model or effort changed" if not same_judge
+                        else "judge prompt changed"] += 1
                     # Keep the old call, out of the way: the report only reads calls next to the runs they judged.
                     for g in f.parent.glob(f"{f.stem}.*"):
                         (stale / tid).mkdir(parents=True, exist_ok=True)
