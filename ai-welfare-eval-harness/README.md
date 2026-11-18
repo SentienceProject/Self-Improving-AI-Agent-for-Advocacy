@@ -98,8 +98,24 @@ but add up to worse get noticed. Those copies are kept in `~/ai-welfare-checkpoi
 can return to; they're full copies, drafts and `my/` files included. Delete old ones once you won't restore or
 compare against them (peer judging doesn't use them; it needs the runs' saved sessions, see the tools README). The
 workspace gets only a checkup's verdict and means; the per-task scores stay here in `techtest/checkup/`, so the
-improvement loop never sees held-out scores task by task. The `[techtest]` section of `config.toml` has the
-settings, and the docstring in `techtest.py` has the details.
+improvement loop never sees held-out scores task by task. Claude mentions a checkup when you start a session in
+the workspace, once when it starts and once when it finishes.
+
+**Regular full evals (optional).** By default a checkup runs the held-out tasks of your own task set (`[paths] tasks`:
+AI welfare or animal advocacy). To have it run a full eval's worth of tasks instead, set in `config.local.toml`:
+
+    [techtest]
+    checkup_every_days = 30            # monthly
+    checkup_tasks = "all"              # dev and held-out tasks
+    checkup_budget = "full"            # about what a full eval run costs, drawn at random (held-out tasks first)
+    # checkup_task_sets = ["tasks", "tasks-animals"]   # both causes: the budget is split equally, and each
+    #                                                  # cause's scores are also reported separately
+
+That is roughly $60 of usage per workspace, so about $120 per checkup plus judging. `python3 techtest.py checkup
+--against <folder> --label <name>` compares the next checkup with another workspace (an archived one, say) instead of
+the last checkpoint; it's reported as a comparison (`techwatch/evaluations/comparison-<date>.md`) and ends no
+trial, since it doesn't check the recent changes. The `[techtest]` section of `config.toml` has the settings, and
+the docstring in `techtest.py` has the details.
 
 Safeguards worth knowing:
 - **A test never runs unread code outside the sandbox.** Hooks, MCP servers and some settings run outside Claude

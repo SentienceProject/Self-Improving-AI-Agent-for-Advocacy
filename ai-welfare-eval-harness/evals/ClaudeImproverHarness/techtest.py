@@ -70,7 +70,12 @@ A proposal flagged again (`review.py test <id>`) after its test finished is test
     python3 techtest.py clean [--yes]     list (with --yes, remove) trial copies no test needs any more
     python3 techtest.py checkup [--now]   the periodic check of the sum of changes (tick runs it when due): the
                                           current workspace against a checkpoint from [techtest]
-                                          checkup_every_days ago, on the held-out tasks; checkpoints are kept
+                                          checkup_every_days ago, on the held-out tasks (or, with checkup_budget,
+                                          a budgeted random draw from each task set); checkpoints are kept
+    python3 techtest.py checkup --against PATH [--label NAME] [--now]
+                                          compare the next checkup with that workspace instead (reported as
+                                          comparison-<date>.md, which ends no trial). By hand, --now waits for a
+                                          running tick rather than running beside it
 
 Only dev tasks are used: proposals come from a loop that adopts what scores well, so heldout tasks stay unseen.
 """
@@ -1690,6 +1695,8 @@ def task_phrases(n=None):
     if not files:
         raise RuntimeError(f"no task files in {H.EVALS / 'tasks'} (locked?), so nothing can be checked for leaks; "
                            "unlock the tasks (task_lock.py unlock) while tests run")
+    for d in sorted(x for x in H.EVALS.glob("tasks-*") if x.is_dir()):   # the other task sets (tasks-animals)
+        files += sorted(d.glob("*/*.md"))
     for f in files:
         body = H.rd(f)
         for head in ("Request", "Judge notes"):
@@ -1937,7 +1944,9 @@ def advance(pid, why, stop, blocked=False):
     return True
 
 
-def cmd_tick(a):
+def tick_lock():
+    """(lock file, None) once this process holds the tick lock, or (None, [pid, since]) if a tick or a checkup
+    started by hand holds it: their agent runs must never overlap. Keep the file open for as long as you need it."""
     OUT.mkdir(parents=True, exist_ok=True)
     lock = open(OUT / ".tick.lock", "a+")
     try:
@@ -1945,15 +1954,23 @@ def cmd_tick(a):
     except BlockingIOError:
         lock.seek(0)
         held = lock.read().split()
+        lock.close()
+        return None, held
+    lock.seek(0)
+    lock.truncate()
+    lock.write(f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+    lock.flush()
+    return lock, None
+
+
+def cmd_tick(a):
+    lock, held = tick_lock()
+    if lock is None:
         age = (datetime.datetime.now() - when(held[1])).total_seconds() / 3600 if len(held) > 1 else None
         msg = "Another techtest tick is running" + (f" (pid {held[0]}, for {age:.1f} h)" if age is not None else "")
         if age is not None and age > CFG.get("tick_warn_hours", 6):
             msg += f". It may be hung: check it with `ps -p {held[0]} -o etime,cmd` and kill it if so"
         return print(msg + ".", file=sys.stderr if age and age > CFG.get("tick_warn_hours", 6) else sys.stdout)
-    lock.seek(0)
-    lock.truncate()
-    lock.write(f"{os.getpid()} {datetime.datetime.now().isoformat(timespec='seconds')}\n")
-    lock.flush()
     # Agent runs never overlap an eval batch's: autoeval's runner takes a shared lock (step_run then waits).
     todo = [(p, w) for p, w in candidates() if not a.only or p == a.only]
     blocked = False  # once usage is out, later proposals still get their judge and report steps
@@ -2056,107 +2073,251 @@ def make_checkpoint(st):
     print(f"  checkup: checkpoint {day} saved at {CHECKPOINTS / day}", flush=True)
 
 
-def checkup_tasks():
+SET_LABELS = {"tasks": "AI-welfare", "tasks-animals": "animal-advocacy"}
+STATUS = EVALS_OUT / "checkup-status.json"   # for the workspace's session-start brief: started / finished
+
+
+def set_label(ts):
+    return SET_LABELS.get(ts, ts)
+
+
+class task_set:
+    """Load tasks from another task set (evals/tasks-animals, ...) inside a with-block: harness.load_tasks() reads
+    H.TASKS, and everything here and in autoeval gets its tasks through it."""
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        self.old, H.TASKS = H.TASKS, H.EVALS / self.name
+        return H.load_tasks()
+
+    def __exit__(self, *exc):
+        H.TASKS = self.old
+
+
+def checkup_sets():
+    """[techtest] checkup_task_sets, or the one task set this harness is set to ([paths] tasks: the cause you work
+    on)."""
+    sets = CFG.get("checkup_task_sets") or [H.TASKS.name]
+    return [x for x in sets if (H.EVALS / x).is_dir()]
+
+
+def pool(tasks):
+    """The task IDs a checkup may use, from [techtest] checkup_tasks: "heldout", "all", or a list of IDs."""
     want = CFG.get("checkup_tasks", "heldout")
-    tasks = H.load_tasks()
-    return [k for k, v in tasks.items() if (v["split"] == "heldout" if want == "heldout" else k in want)]
+    return sorted(k for k, v in tasks.items()
+                  if (v["split"] == "heldout" if want == "heldout" else True if want == "all" else k in want))
 
 
-def checkup_args(cmd, ev, earlier, extra=()):
-    argv = [cmd, ev, "--only", ",".join(checkup_tasks()), "--judge", CFG.get("judge", "chatgpt"),
+def choose_tasks(seed):
+    """{task set: [task IDs]} for one checkup. With [techtest] checkup_budget "" every task in the pool; otherwise
+    each set gets an equal share of the budget ("full": what running every task of a set once typically costs,
+    averaged over the sets; or a number of dollars per workspace), filled at random, held-out tasks first (the
+    improvement loop never tunes on them), skipping a task that would overshoot the share by more than 10%. Every
+    set gets at least one task. Returns (choice, {set: expected cost}, budget or None)."""
+    import random
+    rng, full, pools = random.Random(seed), {}, {}
+    for ts in checkup_sets():
+        with task_set(ts) as tasks:
+            pools[ts] = {k: (tasks[k]["split"], typical_cost(k, tasks[k])) for k in pool(tasks)}
+            full[ts] = sum(typical_cost(k, t) for k, t in tasks.items())
+    pools = {ts: p for ts, p in pools.items() if p}
+    budget = CFG.get("checkup_budget", "")
+    if budget == "":
+        return ({ts: sorted(p) for ts, p in pools.items()},
+                {ts: sum(c for _, c in p.values()) for ts, p in pools.items()}, None)
+    total = sum(full[ts] for ts in pools) / max(len(pools), 1) if budget == "full" else float(budget)
+    share, choice, cost = total / max(len(pools), 1), {}, {}
+    for ts, p in pools.items():
+        order = [k for k in rng.sample(sorted(p), len(p)) if p[k][0] == "heldout"] + \
+                [k for k in rng.sample(sorted(p), len(p)) if p[k][0] != "heldout"]
+        got, spent = [], 0.0
+        for k in order:
+            if spent >= share * 0.9:
+                break
+            if not got or spent + p[k][1] <= share * 1.1:
+                got.append(k)
+                spent += p[k][1]
+        choice[ts], cost[ts] = sorted(got), spent
+    return choice, cost, total
+
+
+def eval_name(day, ts):
+    return f"checkup-{day}" + ("" if ts == "tasks" else f"-{ts}")
+
+
+def checkup_args(cmd, ev, earlier, tids, extra=()):
+    argv = [cmd, ev, "--only", ",".join(tids), "--judge", CFG.get("judge", "chatgpt"),
             "--ws", f"current={WS}", "--ws", f"earlier={earlier}"]
     return A.parser().parse_args(argv + list(extra))
 
 
+def write_status(info):
+    """What the workspace's session brief shows: a checkup started or finished (no task IDs or per-task scores)."""
+    text = json.dumps(info, indent=1)
+    if found := leaks(text):
+        raise RuntimeError(f"checkup status not written: it shares a phrase with task texts ({found[0][0]!r})")
+    EVALS_OUT.mkdir(parents=True, exist_ok=True)
+    H.write_json(STATUS, info, indent=1)
+
+
 def cmd_checkup(a=None, now=False, stop=None, blocked=False):
     """Due every [techtest] checkup_every_days (0 = off) when instruction files changed since the last checkpoint.
-    Resumable: each tick carries on from where the last stopped."""
+    Resumable: each tick carries on from where the last stopped. `checkup --against PATH --label NAME` compares the
+    next checkup (now, with --now) with that workspace instead of the last checkpoint, e.g. an archived one."""
     every = CFG.get("checkup_every_days", 60)
     now = now or bool(a and getattr(a, "now", False))
+    st = checkup_state()
+    if a and getattr(a, "against", None):
+        path = Path(a.against).expanduser().resolve()
+        if not path.is_dir():
+            sys.exit(f"{path}: no such folder")
+        if st.get("running"):
+            sys.exit("a checkup is already running; --against applies to the next one")
+        st["next_against"] = {"path": str(path), "label": a.label or path.name}
+        save_checkup(st)
+        print(f"  checkup: the next one compares with {path}" + ("" if now else " (when it's due; --now to start it)"),
+              flush=True)
+    if a and stop is None:   # by hand: stop at the same plan usage as a tick does (the next tick carries on)
+        stop = A.AUTO.get("stop_at_plan_pct", 85)
+    if a:   # by hand: never alongside a tick's (or another checkup's) agent runs
+        lock, _ = tick_lock()
+        if lock is None:
+            if now and not st.get("running"):
+                st["start_now"] = True
+                save_checkup(st)
+                return print("  checkup: a tick is running; the checkup starts when that tick gets to it, or at the "
+                             "next one", flush=True)
+            return print("  checkup: a tick or another checkup is running; it carries on with any checkup itself",
+                         flush=True)
+    now = now or st.get("start_now", False)
     if not every and not now:
         return
-    st = checkup_state()
     if not st["checkpoints"]:
         return make_checkpoint(st)
     cur = st.get("running")
+    if cur and "evals" not in cur:   # started before task sets: one set, the configured one
+        cur.update(evals={H.TASKS.name: cur["eval"]}, tasks={H.TASKS.name: pool(H.load_tasks())},
+                   done=[f"{d}:{H.TASKS.name}" for d in cur.get("done", [])])
     if not cur:
         last = st["checkpoints"][-1]
         age = (datetime.date.today() - datetime.date.fromisoformat(last["date"])).days
         if not now and not trial_due(last["date"]) and (age < every or without_caches(last["files"]) == instruction_hashes(WS)):
             return
-        if not checkup_tasks():
-            return print("  checkup: no held-out tasks to run it on", flush=True)
-        cur = st["running"] = {"eval": f"checkup-{datetime.date.today().isoformat()}", "earlier": last["path"],
-                               "earlier_date": last["date"], "done": []}
+        day = datetime.date.today().isoformat()
+        choice, cost, budget = choose_tasks(day)
+        if not choice:
+            return print("  checkup: no tasks to run it on (see [techtest] checkup_tasks and checkup_task_sets)",
+                         flush=True)
+        nxt = st.pop("next_against", None)
+        st.pop("start_now", None)
+        cur = st["running"] = {"evals": {ts: eval_name(day, ts) for ts in choice}, "tasks": choice,
+                               "earlier": nxt["path"] if nxt else last["path"],
+                               "earlier_date": nxt["label"] if nxt else last["date"],
+                               "checkpoint": not nxt, "budget": budget, "expected_usd": cost, "done": []}
         save_checkup(st)
+        write_status({"state": "running", "started": day, "against": cur["earlier_date"],
+                      "tasks": {set_label(ts): len(t) for ts, t in choice.items()},
+                      "expected_usd_per_workspace": round(sum(cost.values()), 2)})
+        print(f"  checkup: started against {cur['earlier_date']}: " + "; ".join(
+            f"{set_label(ts)} {', '.join(t)} (~${cost[ts]:.0f})" for ts, t in choice.items()), flush=True)
     if blocked:
         return
-    ev, earlier = cur["eval"], cur["earlier"]
-    tasks, tids = H.load_tasks(), checkup_tasks()
-    if "run" not in cur["done"]:
-        if stop and not plan_ok(stop):
-            return
-        try:
-            A.cmd_run(checkup_args("run", ev, earlier), tasks, tids)
-        except SystemExit as e:
-            if runner_stop(e) == "error":
-                raise RuntimeError(f"checkup runner stopped: {str(e).strip() or e.code}")
-            return print(f"  checkup: {str(e).strip()}", flush=True)
-        if any(H.reps(A.version(ev, w), t) < 1 for w in ("current", "earlier") for t in tids):
-            return print("  checkup: runs not finished; the next tick carries on", flush=True)
-        cur["done"].append("run")
-        save_checkup(st)
-    if "judge" not in cur["done"]:
-        aj = checkup_args("judge", ev, earlier, judge_args())
-        A.cmd_judge(aj, tasks, tids)
-        A.cmd_report(aj, tasks, tids)
-        cur["done"].append("judge")
-        save_checkup(st)
-    ar = checkup_args("report", ev, earlier, judge_args())
-    scores = {}
-    for r in A.current_calls(ar, A.workspaces(ev, ar.ws), tids)[0]:
-        for s in r["slots"]:
-            if s["score"] is not None:
-                scores.setdefault(r["task"], {}).setdefault(s["workspace"], []).append(s["score"])
+    earlier, scores = cur["earlier"], {}
+    for ts, ev in cur["evals"].items():
+        tids = cur["tasks"][ts]
+        with task_set(ts) as tasks:
+            if f"run:{ts}" not in cur["done"]:
+                if stop and not plan_ok(stop):
+                    return
+                try:
+                    A.cmd_run(checkup_args("run", ev, earlier, tids), tasks, tids)
+                except SystemExit as e:
+                    if runner_stop(e) == "error":
+                        raise RuntimeError(f"checkup runner stopped: {str(e).strip() or e.code}")
+                    return print(f"  checkup: {str(e).strip()}", flush=True)
+                if any(H.reps(A.version(ev, w), t) < 1 for w in ("current", "earlier") for t in tids):
+                    return print("  checkup: runs not finished; the next tick carries on", flush=True)
+                cur["done"].append(f"run:{ts}")
+                save_checkup(st)
+            if f"judge:{ts}" not in cur["done"]:
+                aj = checkup_args("judge", ev, earlier, tids, judge_args())
+                A.cmd_judge(aj, tasks, tids)
+                A.cmd_report(aj, tasks, tids)
+                cur["done"].append(f"judge:{ts}")
+                save_checkup(st)
+            ar = checkup_args("report", ev, earlier, tids, judge_args())
+            for r in A.current_calls(ar, A.workspaces(ev, ar.ws), tids)[0]:
+                for sl in r["slots"]:
+                    if sl["score"] is not None:
+                        scores.setdefault(ts, {}).setdefault(r["task"], {}).setdefault(sl["workspace"], []).append(
+                            sl["score"])
     need = CFG.get("shuffles", 2)
-    gaps = [f"{t} {w}" for t in tids for w in ("current", "earlier") if len(scores.get(t, {}).get(w, [])) < need]
+    gaps = [(ts, f"{t} {w}") for ts, tids in cur["tasks"].items() for t in tids for w in ("current", "earlier")
+            if len(scores.get(ts, {}).get(t, {}).get(w, [])) < need]
     if gaps:   # a judge outage isn't a result, and must not move the reference point
-        cur["done"].remove("judge")
+        for ts in {g[0] for g in gaps}:
+            cur["done"].remove(f"judge:{ts}")
         save_checkup(st)
-        return print(f"  checkup: judging incomplete ({', '.join(gaps[:6])}); the next tick retries", flush=True)
-    means = {t: {w: mean_of(v) for w, v in d.items()} for t, d in scores.items()}
-    cm = mean_of([means[t]["current"] for t in tids])
-    em = mean_of([means[t]["earlier"] for t in tids])
+        return print(f"  checkup: judging incomplete ({', '.join(g[1] for g in gaps[:6])}); the next tick retries",
+                     flush=True)
+    means = {ts: {t: {w: mean_of(v) for w, v in d.items()} for t, d in sc.items()} for ts, sc in scores.items()}
+    per_set = {ts: {w: mean_of([m[t][w] for t in cur["tasks"][ts]]) for w in ("current", "earlier")}
+               for ts, m in means.items()}
+    # Every task counts once, whichever set it's from: the overall mean is over all tasks, not over the sets' means.
+    every_task = [m[t] for ts, m in means.items() for t in cur["tasks"][ts]]
+    cm = mean_of([x.get("current") for x in every_task])
+    em = mean_of([x.get("earlier") for x in every_task])
     margin = CFG.get("adopt_margin", 0.5)
+    ckpt = cur.get("checkpoint", True)
     if cm is None or em is None:
         verdict = "inconclusive: a score is missing"
-    elif em > cm + margin:
+    elif em > cm + margin and ckpt:
         verdict = (f"the earlier version scored better ({em:.2f} vs {cm:.2f}). The changes since may have made things "
                    f"worse on balance; to go back, `python3 techwatch/scripts/review.py restore {cur['earlier_date']}`")
+    elif em > cm + margin:
+        verdict = f"{cur['earlier_date']} scored better ({em:.2f} vs {cm:.2f})"
     elif cm > em + margin:
         verdict = f"the current version scored better ({cm:.2f} vs {em:.2f})"
     else:
         verdict = f"no clear difference ({cm:.2f} now vs {em:.2f} then)"
-    rows = [f"| {t} | {fmt_score(m.get('earlier'))} | {fmt_score(m.get('current'))} |" for t, m in sorted(means.items())]
-    head = [f"# Checkup: the workspace now vs {cur['earlier_date']}", "", f"Outcome: checked", "",
-            f"{datetime.date.today()} · the current workspace and the checkpoint from {cur['earlier_date']} each ran "
-            f"the {len(tids)} held-out tasks once; a blind judge scored them side by side.", "",
-            f"**Verdict:** {verdict}.", ""]
+    n = sum(len(t) for t in cur["tasks"].values())
+    what = " and ".join(f"{len(cur['tasks'][ts])} {set_label(ts)}" for ts in cur["tasks"])
+    by_set = [f"- {set_label(ts)} tasks ({len(cur['tasks'][ts])}): {fmt_score(v['current'])} now vs "
+              f"{fmt_score(v['earlier'])} then" for ts, v in per_set.items()] if len(per_set) > 1 else []
+    kind = "held-out" if CFG.get("checkup_tasks", "heldout") == "heldout" else "eval"
+    # A checkup against a checkpoint checks the changes since (and ends trials: review.py reads checkup-*.md). One
+    # against another workspace (--against) is a comparison: it says nothing about recent changes, so it's named
+    # comparison-*.md and ends no trial.
+    head = [f"# {'Checkup' if ckpt else 'Comparison'}: the workspace now vs {cur['earlier_date']}", "",
+            f"Outcome: checked", "",
+            f"{datetime.date.today()} · the current workspace and {'the checkpoint from ' if ckpt else ''}"
+            f"{cur['earlier_date']} each ran {what} {kind} task{'s' if n > 1 else ''} once; a blind judge scored them "
+            "side by side.", "", f"**Verdict:** {verdict}.", ""] + \
+           (["By task set (the verdict averages every task, each counting once):", ""] + by_set + [""]
+            if by_set else [])
     tail = ["", "One run per task and one judge: treat a small difference as noise. The checkpoint is kept, with every "
             "earlier one, so the workspace can go back to any of them (`review.py restore <date>`)."]
+    rows = [f"| {set_label(ts)} | {t} | {fmt_score(m.get('earlier'))} | {fmt_score(m.get('current'))} |"
+            for ts, sm in means.items() for t, m in sorted(sm.items())]
     # The workspace gets the verdict and means only: held-out scores by task would, over many checkups, let the
     # improvement loop aim at the held-out tasks. The per-task table stays here, in techtest/checkup/.
     (OUT / "checkup").mkdir(parents=True, exist_ok=True)
     H.write_md(OUT / "checkup" / f"{datetime.date.today().isoformat()}.md",
-               "\n".join(head + ["| task | earlier | now |", "|---|---|---|"] + rows + tail) + "\n")
+               "\n".join(head + ["| set | task | earlier | now |", "|---|---|---|---|"] + rows + tail) + "\n")
     text = "\n".join(head + tail) + "\n"
     if found := leaks(text):
         raise RuntimeError(f"checkup report not written: it shares a phrase with task texts ({found[0][0]!r})")
     EVALS_OUT.mkdir(parents=True, exist_ok=True)
-    H.write_md(EVALS_OUT / f"checkup-{datetime.date.today().isoformat()}.md", text)
-    st.setdefault("history", []).append({**cur, "verdict": verdict, "current_mean": cm, "earlier_mean": em})
+    report = EVALS_OUT / f"{'checkup' if ckpt else 'comparison'}-{datetime.date.today().isoformat()}.md"
+    H.write_md(report, text)
+    st.setdefault("history", []).append({**cur, "verdict": verdict, "current_mean": cm, "earlier_mean": em,
+                                         "by_set": per_set})
     st.pop("running", None)
     save_checkup(st)
+    write_status({"state": "finished", "finished": datetime.date.today().isoformat(), "against": cur["earlier_date"],
+                  "verdict": verdict, "by_set": {set_label(ts): v for ts, v in per_set.items()},
+                  "report": f"techwatch/evaluations/{report.name}"})
     print(f"  checkup: {verdict}", flush=True)
     make_checkpoint(st)
 
@@ -2296,6 +2457,9 @@ def main():
     r.add_argument("id")
     k = sub.add_parser("checkup")
     k.add_argument("--now", action="store_true", help="run it now, even if it isn't due")
+    k.add_argument("--against", help="compare the next checkup with this workspace folder instead of the last "
+                                     "checkpoint (e.g. an archived workspace)")
+    k.add_argument("--label", help="with --against: its name in the report (default: the folder's name)")
     c = sub.add_parser("clean")
     c.add_argument("--yes", action="store_true", help="remove them (default: only list them)")
     a = ap.parse_args()

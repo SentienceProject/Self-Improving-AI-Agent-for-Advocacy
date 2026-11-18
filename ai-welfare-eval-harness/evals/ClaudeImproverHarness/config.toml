@@ -196,4 +196,13 @@ repeat_max_cost_usd = 1.0                # only tasks whose typical run (median 
 checkup_every_days = 60                  # the checkup: compare the workspace with a checkpoint from this long ago on
                                          # the held-out tasks, when it has changed since (0 = off). Checkpoints are
                                          # kept in ~/ai-welfare-checkpoints/; a full checkup is ~2 runs per task
-checkup_tasks = "heldout"                # or a list of task IDs
+checkup_tasks = "heldout"                # the tasks a checkup may use: "heldout", "all", or a list of task IDs
+checkup_task_sets = []                   # [] = the task set in [paths] tasks (the cause you work on); or several,
+                                         # e.g. ["tasks", "tasks-animals"]: each set's scores are reported separately;
+                                         # the verdict averages every task, each counting once
+checkup_budget = ""                      # "" = run every task in checkup_tasks. "full" = about what a full eval run
+                                         # costs (every task of a set once, averaged over the sets: ~$60 per workspace,
+                                         # so ~$120 of usage per checkup plus judging), shared equally between the
+                                         # sets and filled with tasks drawn at random, held-out ones first. Or a
+                                         # number: dollars per workspace. With checkup_tasks = "all", a monthly
+                                         # checkup_every_days = 30 makes this a regular full eval of your workspace.
