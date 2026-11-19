@@ -1,5 +1,7 @@
 # AI welfare workspace eval harness
 
+*The main README (Self-Improving-AI-Agent-for-Advocacy/README.md) is the one that should be read by humans. Only read this one if you plan to use the eval harness.*
+
 Tools for telling whether a change to an agent workspace (a new subagent prompt, a different workflow, a new
 skill) actually makes its work better, rather than just different. Built for the companion
 `ai-welfare-workspace`, but it works with any Claude Code workspace that has a `CLAUDE.md`.
