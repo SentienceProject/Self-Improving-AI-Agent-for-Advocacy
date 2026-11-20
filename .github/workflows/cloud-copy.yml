@@ -1,0 +1,43 @@
+# Keeps the cloud copy (github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy-Cloud) in step with this
+# repository. Cloud sessions at claude.ai/code only load a workspace that sits at the repository's root, so the cloud
+# copy is ai-welfare-workspace/ on its own, with its full history (git subtree split; the same input always gives the
+# same commits, so each push is a plain fast-forward). People import it as their own private copy; see
+# ai-welfare-workspace/README.md, "Using it from claude.ai".
+#
+# The push uses a deploy key that can write only to the cloud copy (secret CLOUD_COPY_DEPLOY_KEY).
+name: Update the cloud copy
+
+on:
+  push:
+    branches: [main]
+    paths: ["ai-welfare-workspace/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-copy
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Split ai-welfare-workspace/ and push it to the cloud copy
+        env:
+          DEPLOY_KEY: ${{ secrets.CLOUD_COPY_DEPLOY_KEY }}
+        run: |
+          set -eu
+          sha=$(git subtree split --prefix=ai-welfare-workspace HEAD)
+          echo "Cloud copy main -> $sha"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/cloud_copy
+          chmod 600 ~/.ssh/cloud_copy
+          # GitHub's published ed25519 host key (docs.github.com, "GitHub's SSH key fingerprints")
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/cloud_copy -o IdentitiesOnly=yes" \
+            git push git@github.com:SentienceProject/Self-Improving-AI-Agent-for-Advocacy-Cloud.git "$sha:refs/heads/main"
