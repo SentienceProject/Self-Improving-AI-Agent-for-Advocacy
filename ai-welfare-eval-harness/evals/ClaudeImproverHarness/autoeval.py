@@ -25,7 +25,10 @@ and finished judge calls are skipped. --ws name=path (repeatable) adds or re-poi
 the ones it already has (edit runs/EVAL/eval.json to drop one).
 
 Exit codes of import/run/all (autorun.py acts on them): 0 done, 3 stopped for usage, 4 runs deferred to the next
-5-hour session, 5 another agent batch holds the lock, 1 error (e.g. a run failed).
+5-hour session, 5 another agent batch holds the lock, 1 error (e.g. a run failed). judge/all also exit 6 when an
+outside judge's daily quota is used up (Gemini's free tier): the other judges still finish, the message says when
+the quota comes back, and re-running after then makes only the missing calls (techtest.py's hourly tick and
+promote.py do this by themselves).
 
 What the judge sees of a run: the file(s) the agent saved and its replies to the user, as two labelled parts
 (paths to the workspace are replaced by <workspace>), plus a line on its length where the request sets a limit.
@@ -71,7 +74,7 @@ UNCERTAINTY = ("Don't take off points for admitting uncertainty about a source, 
 SEP = "*" * 151
 NUM_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
 BUDGET_RE = re.compile(r"Only use \$\s*([\d.]+)", re.I)
-EXIT_DONE, EXIT_ERROR, EXIT_USAGE, EXIT_DEFERRED, EXIT_LOCK = 0, 1, 3, 4, 5
+EXIT_DONE, EXIT_ERROR, EXIT_USAGE, EXIT_DEFERRED, EXIT_LOCK, EXIT_QUOTA = 0, 1, 3, 4, 5, 6
 SPREAD_FLAG_H = 12  # flag a task whose workspaces' runs started further apart than this
 STARTUP_ID = "_startup"  # each workspace's start-up runs (usage scoring): runs/EVAL/<workspace>/_startup/
 
@@ -1254,6 +1257,13 @@ def cmd_judge(a, tasks, ids):
     effort = AUTO.get(f"{a.judge}_effort") or None if a.judge in ("chatgpt", "gemini") else None
     out = RESULTS / a.eval / a.judge
     todo, why, stale = [], Counter(), stale_dir(out)
+    # an outside judge whose daily quota is out: stop before touching any earlier call, if a call is needed at all
+    quota_out = X.quota_until(model or X.GEMINI_MODEL) if a.judge == "gemini" else None
+
+    def no_quota():
+        return Stop(EXIT_QUOTA, f"\n{a.judge} judging waits: {model or X.GEMINI_MODEL}'s daily quota is used up until "
+                                f"{quota_out.astimezone():%Y-%m-%d %H:%M %Z}. Re-run the same command after then; "
+                                "finished calls are kept.")
     if a.judge == "peers":  # traps are judged by the outside judges only
         ids = [t for t in ids if tasks[t]["kind"] != "trap"]
     for tid in ids:
@@ -1271,6 +1281,8 @@ def cmd_judge(a, tasks, ids):
                     if old.get("group") == key and old.get("parsed") and not a.force \
                             and old.get("judge_version", 1) == JUDGE_VERSION and not saw_own and same_judge:
                         continue
+                    if quota_out:
+                        raise no_quota()
                     why["forced" if a.force else "drafts or judge input changed" if old.get("group") != key
                         else "earlier call failed" if not old.get("parsed") else "it was shown its own draft"
                         if saw_own else "judge model or effort changed" if not same_judge
@@ -1280,6 +1292,8 @@ def cmd_judge(a, tasks, ids):
                         (stale / tid).mkdir(parents=True, exist_ok=True)
                         g.rename(stale / tid / g.name)
                 else:
+                    if quota_out:
+                        raise no_quota()
                     why["new"] += 1
                 todo.append((tid, b, s, group, key, f))
     print(f"{len(todo)} judge call(s) to make via {a.judge}" + (f" ({model})" if model else "")
@@ -1303,6 +1317,7 @@ def cmd_judge(a, tasks, ids):
         H.write_md(f.with_suffix(".prompt.md"), prompt)
         print(f"  {tid} batch {b} shuffle {s}: {len(slots)} outputs ...", end=" ", flush=True)
         t0, scores, error, replies, tries, cost, salvaged = time.time(), None, None, [], 0, 0.0, False
+        quota = None
         for attempt in (1, 2):  # one retry if the call fails or its SCORES line can't be read
             tries += 1
             try:
@@ -1316,6 +1331,10 @@ def cmd_judge(a, tasks, ids):
                                   + (" (retry)" if attempt > 1 else ""), f"autoeval {a.eval}", model, effort)
             except Stop:
                 raise
+            except X.QuotaExhausted as e:   # not retried: it would fail again until the quota comes back
+                error, quota = f"{type(e).__name__}: {e}", e
+                print(f"ERROR {str(e)[:200]}", end=" ", flush=True)
+                break
             except PeerCapped as e:   # not retried: it would cost as much again
                 error = f"{type(e).__name__}: {e}"
                 print(f"ERROR {str(e)[:200]}", end=" ", flush=True)
@@ -1349,7 +1368,10 @@ def cmd_judge(a, tasks, ids):
         }, indent=1)
         print((f"done in {time.time() - t0:.0f}s" + (" (no readable TRAP line)" if trap_task and traps is None else ""))
               if scores is not None else
-              f"FAILED after 2 tries ({error or 'no readable SCORES line; see the .reply.md'})")
+              f"FAILED after {tries} {'try' if tries == 1 else 'tries'} ({error or 'no readable SCORES line; see the .reply.md'})")
+        if quota:   # the calls left would all fail the same way
+            raise Stop(EXIT_QUOTA, f"\nStopped {a.judge} judging at {tid}: {quota}. Re-run the same command after "
+                                   "then; finished calls are kept.")
 
 
 PEER_TOOLS = "Read,Grep,Glob,WebFetch,WebSearch"

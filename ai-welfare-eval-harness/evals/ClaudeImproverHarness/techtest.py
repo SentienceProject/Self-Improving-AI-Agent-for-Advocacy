@@ -1368,8 +1368,10 @@ def judge_args(j="chatgpt"):
 
 def step_judge(pid):
     """Every judge in [autoeval] judges (ChatGPT, Gemini, peers), then each one's report. None: stopped for plan
-    usage (peers use it), the next tick carries on."""
+    usage (peers use it); "quota": an outside judge's daily quota is used up (the other judges still went ahead).
+    Either way the next tick carries on, so the first tick after the reset makes the missing calls."""
     tasks = H.load_tasks()
+    waiting = False
     for j in A.judge_list():
         a = judge_ns("judge", pid, j)
         try:
@@ -1378,7 +1380,13 @@ def step_judge(pid):
             if e.code == A.EXIT_USAGE:
                 print(f"  judge {pid}: {e.msg.strip()}", flush=True)
                 return None
+            if e.code == A.EXIT_QUOTA:
+                print(f"  judge {pid}: {e.msg.strip()}", flush=True)
+                waiting = True
+                continue
             raise RuntimeError(f"{j} judging stopped: {e.msg.strip()}")
+    if waiting:
+        return "quota"
     if gaps := judge_gaps(pid):  # a judge outage isn't a result
         raise RuntimeError(f"judging incomplete: {'; '.join(gaps)}. `techtest.py retry {pid}` makes the next tick "
                            f"redo only the failed calls (`redo {pid} judge` redoes them all)")
@@ -2038,7 +2046,10 @@ def advance(pid, why, stop, blocked=False):
                 save_state(pid, st)
                 return False
         elif step == "judge":
-            step_judge(pid)
+            judged = step_judge(pid)
+            if judged in (None, "quota"):   # not done yet; the next tick carries on
+                save_state(pid, st)
+                return judged == "quota"   # a judge's quota needn't hold back other tests' runs; usage does
             st["outcome"] = "tested"
         elif step == "noise":
             if not step_noise(pid):   # noisy: second runs for every task, then judge again
@@ -2357,6 +2368,9 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
                     except A.Stop as e:
                         if e.code == A.EXIT_USAGE:   # peers use the plan's usage: carry on next tick
                             return print(f"  checkup: {e.msg.strip()}; the next tick carries on", flush=True)
+                        if e.code == A.EXIT_QUOTA:   # the other judges go ahead; the gap check below waits for it
+                            print(f"  checkup: {e.msg.strip()}", flush=True)
+                            continue
                         raise RuntimeError(f"checkup: {j} judging stopped: {e.msg.strip()}")
                     A.cmd_report(aj, tasks, tids)
                 cur["done"].append(f"judge:{ts}")

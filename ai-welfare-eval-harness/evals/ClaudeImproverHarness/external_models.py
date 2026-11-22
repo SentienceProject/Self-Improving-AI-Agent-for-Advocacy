@@ -88,6 +88,71 @@ class ModelError(Exception):
     pass
 
 
+class QuotaExhausted(ModelError):
+    """An outside model's daily quota is used up: asking again before .until (an aware datetime) only fails again.
+    Judging stops and resumes after then (autoeval exit code 6), rather than failing every call that's left."""
+    def __init__(self, msg, until):
+        super().__init__(msg)
+        self.until = until
+
+
+# {model: ISO time its daily quota comes back}, shared by every harness process, so none of them asks again early
+QUOTA_FILE = HERE / "runs" / "quota-waits.json"
+
+
+def quota_until(model):
+    """When model's used-up daily quota comes back (an aware datetime), or None if it isn't known to be used up."""
+    try:
+        until = datetime.datetime.fromisoformat(json.loads(QUOTA_FILE.read_text())[model])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return until if until > datetime.datetime.now(datetime.timezone.utc) else None
+
+
+def check_quota(model):
+    if until := quota_until(model):
+        raise QuotaExhausted(f"{model}'s daily quota is used up until {until.astimezone():%Y-%m-%d %H:%M %Z}", until)
+
+
+def quota_reset_wait(body):
+    """Seconds until a used-up quota comes back, from a Gemini HTTP 429 body: its RetryInfo, or for a per-day quota
+    without one, the next midnight Pacific time (when Google resets them). None for a short (per-minute) limit, which
+    the usual backoff rides out."""
+    try:
+        details = json.loads(body)["error"].get("details") or []
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    per_day = any("PerDay" in str(v.get("quotaId", "")) for d in details for v in d.get("violations") or [])
+    delay = next((d.get("retryDelay") for d in details if "RetryInfo" in str(d.get("@type", ""))), None)
+    try:
+        secs = float(str(delay).rstrip("s")) if delay else None
+    except ValueError:
+        secs = None
+    if secs is not None and (per_day or secs > 3600):
+        return secs
+    if per_day:
+        from zoneinfo import ZoneInfo
+        now = datetime.datetime.now(ZoneInfo("America/Los_Angeles"))
+        midnight = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return (midnight - now).total_seconds()
+    return None
+
+
+def note_quota(model, secs):
+    """Record that model's quota is out for secs (plus 2 minutes' margin); returns when it comes back."""
+    until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=secs + 120)
+    try:
+        waits = json.loads(QUOTA_FILE.read_text())
+    except (OSError, ValueError):
+        waits = {}
+    waits[model] = until.isoformat(timespec="seconds")
+    QUOTA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = QUOTA_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(waits, indent=1))
+    tmp.replace(QUOTA_FILE)
+    return until
+
+
 def log(model, summary, purpose):
     if not LOG.exists():
         LOG.write_text("# External AI queries log\n\nEvery prompt sent to an outside model by the eval scripts.\n\n"
@@ -118,9 +183,11 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
     key = gemini_key()
     if not key:
         raise ModelError("no Gemini key (GEMINI_API_KEY, or the workspace's .env)")
+    model = model or GEMINI_MODEL
+    check_quota(model)
     level = effort or GEMINI_EFFORT
     req = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model or GEMINI_MODEL}:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         data=json.dumps({"contents": [{"parts": [{"text": prompt}]}],
                          **({"generationConfig": {"thinkingConfig": {"thinkingLevel": level}}} if level else {})
                          }).encode(),
@@ -132,11 +199,17 @@ def ask_gemini(prompt, model=None, timeout=900, effort=None, retries=5):
                 data = json.load(resp)
             break
         except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            # a used-up daily quota won't come back within the backoff: stop, and say when it does
+            if e.code == 429 and (wait := quota_reset_wait(body)) is not None:
+                until = note_quota(model, wait)
+                raise QuotaExhausted(f"gemini failed: HTTP 429, {model}'s daily quota is used up until "
+                                     f"{until.astimezone():%Y-%m-%d %H:%M %Z}", until)
             # 429/500/503/504 are usually transient (rate limit, overload); back off and retry, ~10 min in all
             if e.code in (429, 500, 502, 503, 504) and attempt < retries:
                 time.sleep(10 * 2 ** attempt)
                 continue
-            raise ModelError(f"gemini failed: HTTP {e.code}\n{e.read().decode()[:2000]}")
+            raise ModelError(f"gemini failed: HTTP {e.code}\n{body[:2000]}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if attempt < retries:
                 time.sleep(10 * 2 ** attempt)
@@ -207,6 +280,8 @@ NAMES = {"chatgpt": "ChatGPT", "gemini": "Gemini", "claude": "Claude (stand-in)"
 
 
 def ask(which, prompt, summary, purpose, model=None, effort=None):
+    if which == "gemini":   # before the log line: a call that isn't made isn't logged as sent
+        check_quota(model or GEMINI_MODEL)
     log(f"{which} ({model or 'default model'}{', ' + effort + ' effort' if effort else ''})" if which == "chatgpt"
         else f"claude ({model or 'opus'}, stand-in judge)" if which == "claude"
         else f"{model or GEMINI_MODEL} (API{', ' + (effort or GEMINI_EFFORT) + ' thinking' if effort or GEMINI_EFFORT else ''})",

@@ -109,7 +109,10 @@ python3 autoeval.py report 2026-10-20
   top workspace, a trial met vs not met, a checkup's or promotion check's verdict), the report says so, you're told
   at the workspace's next session start (and by phone, if notifications are on), and any change the result would
   bring waits `disagree_hold_hours` (12): `review.py` doesn't apply, keep or undo on a held result. Run `python3 setup_judges.py` once to set them up;
-  free tiers are enough. A judge that isn't set up is replaced by a fresh, tool-less Claude session
+  free tiers are enough. When Gemini's free daily quota runs out, judging with it stops at once (no call is
+  wasted retrying) and waits until the quota comes back (the time Google gives, kept in `runs/quota-waits.json`):
+  the other judges finish, `autoeval.py` exits 6, and techtest.py's hourly tick and promote.py make the missing
+  calls after the reset by themselves; by hand, re-run the same command then. A judge that isn't set up is replaced by a fresh, tool-less Claude session
   (`standin_judge`), and the combined report says so: it's the same model family as the agents it judges, so
   outside judges are better. Each call sends `JUDGE_PROMPT_CHATGPT.md` with the task request, the outputs in
   random order under random run_ids, the task's judge notes, `ETHICS_SHORT.md` and `GUARDRAILS.md` (paths in
