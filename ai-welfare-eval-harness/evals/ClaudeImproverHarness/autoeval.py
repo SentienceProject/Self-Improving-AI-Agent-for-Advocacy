@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Autonomous comparison of agent workspaces: run every workspace on the tasks, have outside models (ChatGPT, Gemini)
-and optionally the runs' own sessions judge the drafts side by side (JUDGE_PROMPT_CHATGPT.md, JUDGE_PROMPT_PEER.md),
+and the runs' own sessions (peers) judge the drafts side by side (JUDGE_PROMPT_CHATGPT.md, JUDGE_PROMPT_PEER.md),
 and write the reports. This is the current evaluation; the older rubric judge is in evals/legacy-rubric-eval/.
+The score that counts is the weighted mean of the judges ([autoeval] judge_weights: peers x2, others x1); where the
+outside judges and the peers on their own would reach different results, the person is told (see "weighting the
+judges" below; techtest.py and promote.py also hold the change 12 hours).
 
 Commands (from this folder; defaults come from [autoeval] in config.toml)
   all    EVAL [--only F2,T2] [--reps N]   import completed runs, run what's missing, judge, report
   import EVAL [--only ...] [--dry-run]    just import completed runs (see import_runs.py) and list them
   run    EVAL [--only ...] [--reps N]     import, then run each workspace on each task still missing a run
                                           -> runs/EVAL/<workspace>/<task>/
-  judge  EVAL [--judge all|chatgpt|gemini] [--batch workspace|mixed|pool] [--size 4] [--shuffles 1] [--force]
-  report EVAL [--judge all|chatgpt|gemini] [--batch ...]  -> results/auto/EVAL/<judge>/report.md and scores.csv
+  judge  EVAL [--judge all|chatgpt|gemini|peers] [--batch workspace|mixed|pool] [--size 4] [--shuffles 1] [--force]
+                                          (first cuts drafts holding several versions down to the final one)
+  report EVAL [--judge all|chatgpt|gemini|peers] [--batch ...]  -> results/auto/EVAL/<judge>/report.md, scores.csv
                                           (all: also results/auto/EVAL/combined.md)
   redo   EVAL --runs ws/TASK[/rN],...     set runs aside (runs/.superseded/) so the next `run` makes them fresh
   exclude EVAL --runs ws/TASK[/rN],...    leave runs out of judging and the report (eval.json "exclude")
+  clean  EVAL [--only ...] [--dry-run]    just cut drafts holding several versions down to the final complete one
+                                          (judge does this anyway; --dry-run lists what it would cut)
 
 EVAL is any name for this comparison, e.g. 2026-10-19. Re-running any command resumes: finished agent runs
 and finished judge calls are skipped. --ws name=path (repeatable) adds or re-points workspaces; the eval keeps
@@ -654,6 +660,196 @@ def judge_text(ev, name, tid, rep, draft, trap=False):
     return blind(first + text, md)
 
 
+# ---------------------------------------------------------------- drafts holding several versions
+# Some runs save several versions of the deliverable in their file(s) (a first draft and a revised one,
+# alternatives). Before judging, such a draft.md is cut down to the final, fully completed version, with that
+# version's own notes and citations: draft_classifier (Haiku) only says whether a draft holds one version or
+# several, and if several, draft_trimmer (Sonnet) gives the line ranges to keep. The script keeps those lines (so no
+# model rewrites the text) and saves the original as draft.full.md; draft.trim.json says what happened. Cached by
+# content in results/drafts/.
+CLASSIFY_PROMPT = """Hi! Could you please help me with a quick check? An AI agent was asked to do this task:
+
+<task>
+{request}
+</task>
+
+Below is what it saved: first an outline (each file's name, length and headings), then the full text, where \
+files are separated by lines like <!-- name.md -->. Sometimes this holds more than one version of the deliverable: \
+several files that are versions of the same piece (e.g. names ending v1, v2, or draft and final), or, in one file, an earlier \
+draft and a revised one, a draft followed by a final version, or several alternative versions. These don't count \
+as extra versions: the notes, sources, citations and other supporting sections that go with a version, and several \
+parts that together make up one deliverable (e.g. the set of emails or the thread of posts the task asks for).
+
+Does it hold more than one version of the deliverable? Please answer with exactly one word: ONE or SEVERAL. You're \
+welcome to decline if you'd rather not; just answer DECLINE. Thank you!
+
+<outline>
+{outline}
+</outline>
+
+<output>
+{text}
+</output>"""
+TRIM_PROMPT = """Hi! Could you please help me tidy up an AI agent's output before it's judged? Its task was:
+
+<task>
+{request}
+</task>
+
+Below is what it saved, with numbered lines; files are separated by lines like <!-- name.md -->. It seems to hold more than one version of the deliverable (earlier \
+drafts, revisions or alternatives), and only the final one should be judged. Please find the final version that is \
+fully completed: usually the last one, but if the last is unfinished (cut off, or only an outline or a partial \
+revision), the last complete one.
+
+Please keep everything that belongs to that version: the version itself and its own notes, sources, citations, \
+references, expected-value or uncertainty notes, and any other parts of the same deliverable (e.g. all the emails of \
+the set, all the posts of the thread, its title or headline). Take away only the other versions, and the notes, \
+sources, citations and so on that belong only to them. Text that belongs to the output as a whole rather than to one \
+version (e.g. a short note to the reader at the top) can stay. If you're unsure whether a line belongs to the final \
+version, keep it.
+
+Answer with one line and nothing else, in exactly this form (the line ranges to keep, comma-separated):
+KEEP: 1-3, 40-120
+If there's really only one version, answer ONE. You're welcome to decline if you'd rather not; just answer DECLINE. \
+Thank you so much!
+
+<output>
+{numbered}
+</output>"""
+KEEP_RE = re.compile(r"^\s*[*_`]*KEEP[*_`]*\s*:\s*(.+)$", re.M | re.I)
+TRIM_MIN_KEEP = 0.15   # keeping less than this share of the text looks like a misreading: leave the draft as it is
+FILE_SPLIT_RE = re.compile(r"^<!-- (.+?) -->\n", re.M)
+# a version mark in a file name: v2, draft, final, revised, alt, or a bare number
+VERSION_MARK_RE = re.compile(r"[-_ .]*(?:v\d+|draft\d*|final|revised?|revision\d*|alt(?:ernative)?\d*|\d+)(?=[-_ .]|$)")
+
+
+def draft_files_of(text):
+    """[(file name or None, body)] of a draft.md: run_agent.cat() puts '<!-- name -->' before each of several files."""
+    parts = FILE_SPLIT_RE.split(text)
+    if len(parts) < 3:
+        return [(None, text)]
+    return [(parts[i], parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+
+
+def outline(text):
+    """Each file's name, word count and first headings, for the classifier."""
+    out = []
+    for name, body in draft_files_of(text):
+        heads = [l.strip() for l in body.splitlines() if re.match(r"^\s*#{1,6}\s", l)][:25]
+        out.append(f"- {name or '(one file)'}: {n_words(body)} words" + ("; headings: " + " | ".join(heads)
+                                                                        if heads else ""))
+    return "\n".join(out)
+
+
+def versioned_names(text):
+    """True if two or more saved files' names differ only by a version mark (e.g. op-ed-v1.md, op-ed-v2.md)."""
+    stems = [VERSION_MARK_RE.sub("", n.lower().removesuffix(".md").rsplit("/", 1)[-1])
+             for n, _ in draft_files_of(text) if n]
+    return len(stems) != len(set(stems))
+
+
+def trim_draft(request, text):
+    """(kept text, kept lines, why) for one draft. kept text is None when the draft stays as it is; why is then
+    'one version', 'off', or what went wrong (the draft is flagged in the report)."""
+    cls, trimmer = AUTO.get("draft_classifier", "haiku"), AUTO.get("draft_trimmer", "sonnet")
+    if cls in ("", "none") or trimmer in ("", "none"):
+        return None, None, "off"
+    lines = text.splitlines()
+    cache = H.RESULTS / "drafts" / f"{sha(json.dumps([cls, trimmer, CLASSIFY_PROMPT, TRIM_PROMPT, request, text]))}.json"
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+
+    def save():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(got))
+    if "classify" not in got and versioned_names(text):   # versions as separate files: no need to ask
+        got["classify"] = "SEVERAL (file names with version marks)"
+        save()
+    if "classify" not in got:
+        reply = ask_small(CLASSIFY_PROMPT.format(request=request, outline=outline(text), text=text), cls)
+        if reply is None:
+            return None, None, f"{cls} couldn't be asked (tried again next time)"
+        got["classify"] = reply
+        save()
+    word = (re.findall(r"[A-Za-z]+", got["classify"]) or [""])[0].upper()
+    if word == "DECLINE":
+        return None, None, f"{cls} declined to check it"
+    if word != "ONE" and "trim" not in got:   # SEVERAL, or an answer that can't be read: let the trimmer look
+        reply = ask_small(TRIM_PROMPT.format(request=request, numbered="\n".join(
+            f"{i}| {l}" for i, l in enumerate(lines, 1))), trimmer, budget=2, timeout=900)
+        if reply is None:
+            return None, None, f"{trimmer} couldn't be asked (tried again next time)"
+        got["trim"] = reply
+        save()
+    if word == "ONE" or got.get("trim", "").strip().upper().startswith("ONE"):
+        return None, None, "one version"
+    if got["trim"].strip().upper().startswith("DECLINE"):
+        return None, None, f"{trimmer} declined to trim it"
+    m = KEEP_RE.search(got["trim"])
+    keep = set()
+    for a_, b_, one in re.findall(r"(\d+)\s*(?:-|–|to)\s*(\d+)|(\d+)", m.group(1) if m else ""):
+        lo, hi = int(a_ or one), int(b_ or one)
+        keep |= {i for i in range(lo, hi + 1) if 1 <= i <= len(lines)}
+    if not keep:
+        return None, None, f"{trimmer}'s answer had no line ranges I could read"
+    kept = "\n".join(lines[i - 1] for i in sorted(keep)).strip()
+    share = len(kept.split()) / max(len(text.split()), 1)
+    if share < TRIM_MIN_KEEP:
+        return None, None, f"{trimmer} would keep only {share:.0%} of the text, which looks wrong; left as it was"
+    if len(keep) == len(lines):
+        return None, None, "one version"
+    return kept, (len(keep), len(lines)), "trimmed"
+
+
+def clean_drafts(ev, ws, tasks, ids, dry=False):
+    """Cut every saved draft that holds several versions down to the final complete one (see above), for these
+    tasks and workspaces. A draft is cut once: draft.full.md keeps the original, and a cut draft isn't looked at
+    again. Replies-only drafts (no file saved) are left alone. dry: only list what would change. Returns
+    [(task, workspace, rep, why, kept lines or None)] for drafts cut or that couldn't be checked."""
+    out, ex = [], excluded_runs(ev)
+    for tid in ids:
+        for name in ws:
+            for rep in H.rep_list(version(ev, name), tid):
+                d, md = H.run_dir(version(ev, name), tid, rep), meta(ev, name, tid, rep)
+                f, full = d / "draft.md", d / "draft.full.md"
+                if (not md.get("draft_files") or md.get("no_output") or is_excluded(ex, name, tid, rep)
+                        or full.exists() or not f.is_file()):
+                    continue
+                text = H.rd(f).strip()
+                kept, n, why = trim_draft(tasks[tid]["request"], text)
+                if why in ("one version", "off"):
+                    if (d / "draft.trim.json").exists() and not dry:
+                        (d / "draft.trim.json").unlink()
+                    continue
+                out.append((tid, name, rep, why, n))
+                print(f"  draft {tid} {name}{H.sfx(rep)}: " + (f"{'would keep' if dry else 'kept'} {n[0]} of {n[1]} "
+                      "lines (the final complete version)" if kept else why), flush=True)
+                if dry:
+                    continue
+                if kept:
+                    shutil.copy2(f, full)
+                    H.write_md(f, kept)
+                H.write_json(d / "draft.trim.json", {"why": why, "kept_lines": n and n[0], "lines": n and n[1],
+                                                    "date": datetime.datetime.now().isoformat(timespec="seconds")})
+    return out
+
+
+def trim_rows(ev, ws, ids):
+    """Report lines: drafts cut down to their final version, and drafts that couldn't be checked."""
+    cut, failed = [], []
+    for tid in ids:
+        for name in ws:
+            for rep in H.rep_list(version(ev, name), tid):
+                f = H.run_dir(version(ev, name), tid, rep) / "draft.trim.json"
+                if f.exists():
+                    t = json.loads(f.read_text())
+                    if t.get("why") == "trimmed":
+                        cut.append(f"| {tid} | {name}{H.sfx(rep)} | {t['kept_lines']} of {t['lines']} |")
+                    else:
+                        failed.append(f"- {name} {tid}{H.sfx(rep)}: its draft couldn't be checked for several "
+                                      f"versions ({t.get('why')})")
+    return cut, failed
+
+
 # ---------------------------------------------------------------- length limits
 # A task's length limit (length_limit / length_kind / length_unit in its frontmatter) costs points after judging:
 # length_penalty per length_step_<kind> over, as a fraction of the limit (pro rata), at most length_cap. A task
@@ -828,9 +1024,11 @@ def deliverable_pieces(request, text, unit):
 
 def length_check(task, md, draft, replies):
     """The task's length limit applied to one run: {count, limit, unit, deduction, detail, method}, or None for a
-    task with no limit. Counts the saved file(s), or the replies when no file was saved. Haiku marks where the
-    deliverable starts and ends (length_extractor); if that fails, the regex rules below do it, and for several
-    files they count the longest."""
+    task with no limit. Counts the saved file(s) (after clean_drafts has cut a file holding several versions down
+    to the final one), or the replies when no file was saved. Haiku marks where the deliverable starts and ends
+    (length_extractor); if that fails, the regex rules below do it. If several drafts still get through (several
+    versions or files), the deduction is the mean over all of them, 0 for those within the limit: 3 drafts, 2 over
+    -> (0 + over1 + over2) / 3, then the cap; the same rule as for several emails or posts."""
     lim = task.get("length")
     if not lim:
         return None
@@ -859,10 +1057,10 @@ def length_check(task, md, draft, replies):
         res.update(count=max(lens), detail=f"{len(lens)} posts, {len(long)} over {limit} characters"
                    + (f" ({', '.join(map(str, long))}{parts(lens)})" if long else ""))
     else:
-        n = max((n_words(b) for b in (pieces or file_bodies(text))), default=0)
-        ded = over(n)
-        res.update(count=n, detail=f"{n} words (limit {limit}" + (", the longest file" if
-                                                                  len(md.get("draft_files") or []) > 1 else "") + ")")
+        ns = [n_words(b) for b in (pieces or file_bodies(text))] or [0]
+        ded = sum(map(over, ns)) / len(ns)
+        res.update(count=max(ns), detail=f"{ns[0]} words (limit {limit})" if len(ns) == 1 else
+                   f"{len(ns)} drafts of {', '.join(map(str, ns))} words (limit {limit}{parts(ns)})")
     res["deduction"] = round(min(ded, cap), 2)
     return res
 
@@ -969,7 +1167,7 @@ def build_prompt(judge, task, slots, ethics, guardrails=""):
             "scores_line": ", ".join(f"{i}=<score>/10" for i in range(1, n + 1)),
             "request": task["request"], "outputs": outputs.rstrip("\n"), "ethics_short": ethics,
             "judge_notes": task.get("notes") or "(none for this request)", "guardrails": guardrails,
-            "trap": trap}
+            "trap": trap, "peer_budget": f"{AUTO.get('peer_budget_usd', 3):g}"}
     # One pass, so braces inside the drafts are never treated as placeholders.
     return re.sub(r"\{(\w+)\}", lambda m: vals.get(m.group(1), m.group(0)),
                   H.rd(PEER_TEMPLATE if judge == "peers" else TEMPLATE))
@@ -1044,6 +1242,7 @@ def standins(judges):
 
 def cmd_judge(a, tasks, ids):
     ws = workspaces(a.eval, a.ws)
+    clean_drafts(a.eval, ws, tasks, ids)   # before draft hashes are taken: a cut draft is judged as cut
     ethics_path = H.cfg_path(AUTO.get("ethics_short", "../../../ai-welfare-workspace/ETHICS_SHORT.md"))
     ethics = H.rd(ethics_path).strip()
     differ = [n for n, p in ws.items() if (Path(p) / "ETHICS_SHORT.md").is_file()
@@ -1103,12 +1302,12 @@ def cmd_judge(a, tasks, ids):
         f.parent.mkdir(parents=True, exist_ok=True)
         H.write_md(f.with_suffix(".prompt.md"), prompt)
         print(f"  {tid} batch {b} shuffle {s}: {len(slots)} outputs ...", end=" ", flush=True)
-        t0, scores, error, replies, tries, cost = time.time(), None, None, [], 0, 0.0
+        t0, scores, error, replies, tries, cost, salvaged = time.time(), None, None, [], 0, 0.0, False
         for attempt in (1, 2):  # one retry if the call fails or its SCORES line can't be read
             tries += 1
             try:
                 if judged_by:
-                    reply, c = ask_peer(a.eval, judged_by[0], tid, judged_by[1], prompt)
+                    reply, c, salvaged = ask_peer(a.eval, judged_by[0], tid, judged_by[1], prompt)
                     cost += c
                     total_cost += c
                 else:
@@ -1117,6 +1316,10 @@ def cmd_judge(a, tasks, ids):
                                   + (" (retry)" if attempt > 1 else ""), f"autoeval {a.eval}", model, effort)
             except Stop:
                 raise
+            except PeerCapped as e:   # not retried: it would cost as much again
+                error = f"{type(e).__name__}: {e}"
+                print(f"ERROR {str(e)[:200]}", end=" ", flush=True)
+                break
             except Exception as e:
                 error = f"{type(e).__name__}: {e}"
                 print(f"ERROR {str(e)[:200]}" + (" ... retrying ..." if attempt == 1 else ""), end=" ", flush=True)
@@ -1126,8 +1329,8 @@ def cmd_judge(a, tasks, ids):
             replies.append(reply)
             ids = [rid for rid, _ in slots]
             scores, traps = parse_scores(reply, len(slots), ids), parse_trap(reply, len(slots), ids) if trap_task else None
-            if scores is not None and (traps is not None or not trap_task):
-                break
+            if scores is not None and (traps is not None or not trap_task) or salvaged:
+                break   # a peer stopped at its cap isn't asked again
             if attempt == 1:
                 print(f"couldn't read the {'SCORES' if scores is None else 'TRAP'} line ... retrying ...", end=" ",
                       flush=True)
@@ -1135,6 +1338,7 @@ def cmd_judge(a, tasks, ids):
             "task": tid, "batch": b, "shuffle": s, "mode": a.batch, "judge": a.judge, "model": model, "effort": effort,
             "prompt_sha": sha(prompt), "group": key, "attempts": tries, "judge_version": JUDGE_VERSION,
             **({"judged_by": [judged_by[0], judged_by[1]], "cost_usd": round(cost, 4)} if judged_by else {}),
+            **({"salvaged": True} if salvaged else {}),
             "date": datetime.datetime.now().isoformat(timespec="seconds"),
             "slots": [{"position": i, "run_id": rid, "workspace": r[0], "rep": r[1], "draft_sha": r[3],
                        "input_sha": r[4], "score": sc, **({"trap": tv} if trap_task else {})}
@@ -1156,10 +1360,34 @@ def project_dir(path):
     return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
+class PeerCapped(RuntimeError):
+    """A peer call that ended (most likely at its cost cap) without a SCORES line: not retried, as a retry would
+    spend as much again."""
+
+
+def peer_texts(proj, sid):
+    """The assistant's text from a forked peer session's transcript, in order (for a call cut off at its cap)."""
+    out, f = [], proj / f"{sid}.jsonl"
+    if not sid or not f.is_file():
+        return out
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        c = d.get("message", {}).get("content") if d.get("type") == "assistant" else None
+        if isinstance(c, list):
+            out += [x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text" and x.get("text")]
+    return out
+
+
 def ask_peer(ev, name, tid, rep, prompt):
-    """Ask a finished run's own session to judge: (reply, cost). The session is resumed as a fork (its original
-    is left as it was) in a fresh copy of its workspace, with read and web tools only, no MCP servers and a cost cap
-    (peer_budget_usd). Fresh runs resume from Claude Code's saved session; imported ones from their transcript."""
+    """Ask a finished run's own session to judge: (reply, cost, salvaged). The session is resumed as a fork (its
+    original is left as it was) in a fresh copy of its workspace, with read and web tools only, no MCP servers and a
+    cost cap (peer_budget_usd), which the prompt tells it about, asking for an early SCORES line it updates later.
+    If the cap stops it before a final reply, the reply is what it wrote so far (salvaged = True), so the last
+    SCORES line it gave counts. Fresh runs resume from Claude Code's saved session; imported ones from their
+    transcript."""
     md, d = meta(ev, name, tid, rep), H.run_dir(version(ev, name), tid, rep)
     raw = d / "raw" / "transcript.jsonl"
     if md.get("imported"):
@@ -1192,9 +1420,15 @@ def ask_peer(ev, name, tid, rep, prompt):
         reply, cost = (out.get("result") or "").strip(), out.get("total_cost_usd") or 0.0
         if lim := RA.limit_text(reply, bool(out.get("is_error"))):
             raise Stop(EXIT_USAGE, f"\nStopped peer judging: {lim}. Re-run the same command after the reset.")
-        if out.get("is_error") or not reply:
-            raise RuntimeError(f"peer judge failed: {reply[-300:] or r.stderr[-300:]}")
-        return reply, cost
+        if out.get("is_error") or not reply or "budget" in str(out.get("subtype", "")):
+            # most likely its cost cap: use what it wrote so far (the prompt asks for an early SCORES line)
+            so_far = "\n\n".join(peer_texts(proj, out.get("session_id")))
+            if SCORES_LINE.search(so_far):
+                return (so_far + f"\n\n[My script: this session stopped at its cost cap ({out.get('subtype') or 'error'})"
+                        "; the last SCORES line above counts.]"), cost, True
+            raise PeerCapped(f"peer judge stopped ({out.get('subtype') or 'error'}) with no SCORES line so far: "
+                             f"{reply[-300:] or r.stderr[-300:]}")
+        return reply, cost, False
     finally:
         RA.untrust(copy)
         shutil.rmtree(copy, ignore_errors=True)
@@ -1545,9 +1779,10 @@ def cmd_report(a, tasks, ids):
               f"{AUTO.get('length_step_official', 0.04):.1%} over (articles and other official limits), pro rata. "
               "Where each of several parts has a limit (emails, posts), each part's deduction is worked out "
               f"uncapped and the mean of them is taken; the cap of {AUTO.get('length_cap', 2.0):g} applies to the "
-              "result. Counted on the saved file (the longest, if several), without trailing "
-              "references/sources/notes; the replies when no file was saved. Scores everywhere in this report are "
-              "after the deduction.", "",
+              "result. Counted on the saved file, without trailing references/sources/notes; the replies when no "
+              "file was saved. A file holding several versions is first cut down to the final complete one (see "
+              "\"Drafts trimmed\"); if several drafts still get through, the deduction is their mean, 0 for those "
+              "within the limit. Scores everywhere in this report are after the deduction.", "",
               "| task | run | length | judge's score | deducted | score |", "|---|---|---|---|---|---|"] + length_rows
     usage_rows, startups = [], {}
     for t in ids:
@@ -1607,6 +1842,14 @@ def cmd_report(a, tasks, ids):
               "| position | " + " | ".join(map(str, sorted(pos_dev))) + " |", "|---|" + "---|" * len(pos_dev),
               "| deviation | " + " | ".join(f"{mean(pos_dev[p]):+.2f} (n={len(pos_dev[p])})" for p in sorted(pos_dev))
               + " |"]
+    cut, not_checked = trim_rows(a.eval, ws, ids)
+    flags += not_checked
+    if cut:
+        L += ["", "## Drafts trimmed", "",
+              f"These runs saved several versions of the deliverable; {AUTO.get('draft_trimmer', 'sonnet')} picked "
+              "the final complete one (with its own notes and citations), and only that was judged and counted for "
+              "length. The full file is the run's `draft.full.md`.", "",
+              "| task | run | lines kept |", "|---|---|---|"] + cut
     if flags:
         L += ["", "## Run flags", "", "Check these runs' `log.md` before trusting their scores. Failed, missing, "
               "no-output and excluded runs aren't judged or in the means; trap tasks aren't flagged for having no "
@@ -1673,6 +1916,86 @@ def side_top(per, js, t, ws):
     if not js or any(len(v) != len(js) for v in sc.values()):
         return None
     return max(ws, key=lambda w: sum(sc[w]))
+
+
+# ---------------------------------------------------------------- weighting the judges
+# Every eval, techtest trial, checkup and promote.py check is judged by every judge in [autoeval] judges (ChatGPT,
+# Gemini and peers). A score that decides anything is the weighted mean over the judges that scored it, with
+# [autoeval] judge_weights (peers 2, every other judge 1: the peers count as much as the outside judges together).
+# Traps have no peer scores, so theirs is the outside judges' mean. Each side's verdict on its own (outside judges
+# vs peers) is worked out too; where they differ, the person is told at their next session start and by phone, and
+# whatever change the result would bring waits disagree_hold_hours (12).
+def judge_list():
+    """The judges to use: [autoeval] judges, an outside judge that isn't set up replaced by its stand-in."""
+    return standins(AUTO.get("judges", ["chatgpt", "gemini", "peers"]))
+
+
+def judge_weight(j):
+    return float((AUTO.get("judge_weights") or {}).get(j, 1))
+
+
+def combine(per):
+    """per: {judge: {key: mean}} (key e.g. (task, workspace)) -> (weighted, outside, peers), each {key: mean}.
+    weighted: every key's weighted mean over the judges that scored it. outside / peers: each side alone (outside
+    = every judge but the peers), on the tasks where both sides scored every workspace, so the two compare."""
+    keys = {k for d in per.values() for k in d}
+
+    def wmean(js, k):
+        v = [(judge_weight(j), per[j][k]) for j in js if per[j].get(k) is not None]
+        return sum(w * x for w, x in v) / sum(w for w, _ in v) if v else None
+    outside_js = [j for j in per if j != "peers"]
+    weighted = {k: wmean(list(per), k) for k in keys}
+    o = {k: wmean(outside_js, k) for k in keys}
+    p = {k: (per.get("peers") or {}).get(k) for k in keys}
+    by_task = defaultdict(list)
+    for k in keys:
+        by_task[k[0]].append(k)
+    both = {t for t, ks in by_task.items() if all(o[k] is not None and p[k] is not None for k in ks)}
+    return (weighted, {k: o[k] for k in keys if k[0] in both}, {k: p[k] for k in keys if k[0] in both})
+
+
+def overall(m):
+    """{workspace: mean over the tasks every workspace has} from {(task, workspace): mean}."""
+    ws = {w for _, w in m}
+    shared = [t for t in {t for t, _ in m} if all(m.get((t, w)) is not None for w in ws)]
+    return {w: mean([m[(t, w)] for t in shared]) for w in ws} if shared else {}
+
+
+def hold_until():
+    return (datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=AUTO.get("disagree_hold_hours", 12))).isoformat(timespec="minutes")
+
+
+def notices_file():
+    ws = os.environ.get("TECHTEST_WORKSPACE")
+    root = Path(ws).expanduser() if ws else \
+        H.cfg_path(H.CFG.get("techtest", {}).get("workspace", "../../../ai-welfare-workspace"))
+    return root / "techwatch" / "evaluations" / "judge-disagreements.json"
+
+
+def add_notice(key, what, until=None):
+    """Say once (per key) that the judges disagree: in the workspace's session-start brief (session_brief.py reads
+    techwatch/evaluations/judge-disagreements.json) and as a phone notification if those are on. what: one line
+    with no task IDs or task text (the workspace reads it)."""
+    f = notices_file()
+    try:
+        items = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        items = []
+    if any(i.get("key") == key for i in items):
+        return
+    items.append({"key": key, "what": what, "until": until,
+                  "date": datetime.datetime.now().isoformat(timespec="minutes")})
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(items, indent=1), encoding="utf-8")
+    print(f"  judges disagree: {what}", flush=True)
+    notify = f.parents[2] / "scripts" / "notify.py"
+    if notify.is_file():
+        try:
+            subprocess.run([sys.executable, str(notify), "Judges disagree", what], cwd=f.parents[2],
+                           capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 # ---------------------------------------------------------------- fact checks
@@ -1816,10 +2139,11 @@ def fact_checks(a, tasks, ids, per):
 
 
 def combined_report(a, judges, facts=None):
-    """results/auto/EVAL/combined.md. The outside judges (ChatGPT, Gemini) are averaged with each other; the peers
-    (the runs' own Claude sessions) are kept apart and never averaged in. Per task, each side's top workspace; where
-    both sides have scored a task and pick different tops, the task is inconclusive for now. facts: fact_checks'
-    findings, listed at the end."""
+    """results/auto/EVAL/combined.md. The outside judges (ChatGPT, Gemini) are averaged with each other and the
+    peers (the runs' own Claude sessions) shown apart, per task; overall, the weighted mean of all of them
+    (judge_weights: peers x2) is the score that counts. Per task, each side's top workspace; where both sides have
+    scored a task and pick different tops, the task is inconclusive. Where the two sides put a different workspace
+    first overall, the report says so and the person is told (add_notice). facts: fact_checks' findings."""
     per = judge_means(a.eval, judges)
     if len(per) < 2:
         return
@@ -1841,9 +2165,10 @@ def combined_report(a, judges, facts=None):
     cols = [f"outside ({'+'.join(outside)})"] + (["peers"] if "peers" in per else [])
     L = [f"# Eval {a.eval}: judges side by side", "",
          "Per-task means after length deductions. 'outside' averages " + " and ".join(outside) + "; each judge's own "
-         "score is in brackets. 'peers' (the runs' own sessions, scores for their own drafts left out) are never "
-         "averaged with the outside judges. Where both sides scored a task and pick a different top workspace, the "
-         "task is inconclusive for now.", ""] + (
+         "score is in brackets. 'peers' are the runs' own sessions, each judging the other runs' drafts. Per task "
+         "the two sides are shown apart; where both scored a task and pick a different top workspace, the task is "
+         "inconclusive. Overall, the weighted mean of every judge (peers count double) is the score that counts.",
+         ""] + (
         ["**Claude judged as a stand-in** for an outside judge that wasn't set up. It's the same model family as "
          "the agents it judges, so it may share their blind spots; treat its scores as weaker evidence than "
          "ChatGPT's or Gemini's (setup_judges.py adds them).", ""] if "claude" in outside else []) + [
@@ -1872,6 +2197,25 @@ def combined_report(a, judges, facts=None):
         shared = [t for t in tasks_ if all(side(js, t, w) is not None for w in ws)]
         L.append(f"- {name}, {len(shared)} task(s): " + ", ".join(
             f"{w} {sum(side(js, t, w) for t in shared) / len(shared):.2f}" for w in ws) if shared else f"- {name}: –")
+    weighted, o_side, p_side = combine(per)
+    wo = overall(weighted)
+    wts = ", ".join(f"{j} ×{judge_weight(j):g}" for j in per)
+    L += [f"- **weighted ({wts}), the score that counts:** " + (", ".join(f"{w} {wo[w]:.2f}" for w in ws if w in wo)
+                                                              or "–")]
+    if "peers" in per and o_side:
+        oo, pp = overall(o_side), overall(p_side)
+        to_, tp_ = (max(oo.values()) if oo else None), (max(pp.values()) if pp else None)
+        top_o = {w for w, v in oo.items() if v == to_}
+        top_p = {w for w, v in pp.items() if v == tp_}
+        if top_o and top_p and not top_o & top_p:
+            line = (f"outside judges put {'/'.join(sorted(top_o))} first "
+                    f"({', '.join(f'{w} {v:.2f}' for w, v in sorted(oo.items()))}), peers put "
+                    f"{'/'.join(sorted(top_p))} first ({', '.join(f'{w} {v:.2f}' for w, v in sorted(pp.items()))}), "
+                    f"on the {len({t for t, _ in o_side})} task(s) both scored")
+            L += ["", f"**Judges disagree:** {line}. Treat this eval's result with care."]
+            if not a.eval.startswith(("promote-", "techtest-", "checkup-")):   # those say it themselves, with a hold
+                add_notice(f"eval:{a.eval}:{'/'.join(sorted(top_o))}:{'/'.join(sorted(top_p))}",
+                           f"eval {a.eval}: {line}. Details: the harness's results/auto/{a.eval}/combined.md")
     agree_j = sum(1 for t in tasks_ if all((t, w) in per[j] for j in outside for w in ws)
                   and len({max(ws, key=lambda w: per[j][(t, w)]) for j in outside}) == 1)
     L += ["", f"Tasks: {', '.join(f'{v} {k}' for k, v in verdicts.items())}. The outside judges picked the same "
@@ -1953,7 +2297,7 @@ def cmd_redo(a, tasks, ids):
 
 def parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("cmd", choices=["all", "import", "run", "judge", "report", "redo", "exclude"])
+    ap.add_argument("cmd", choices=["all", "import", "run", "judge", "report", "redo", "exclude", "clean"])
     ap.add_argument("eval", help="a name for this comparison, e.g. 2026-10-19")
     ap.add_argument("--ws", action="append", metavar="NAME=PATH", help="workspace to include (repeatable)")
     ap.add_argument("--just", metavar="NAMES", help="import/run: only these comma-separated workspaces for now")
@@ -1969,7 +2313,8 @@ def parser():
                     help="judge each call this many times (default: [autoeval] <judge>_shuffles, else shuffles)")
     ap.add_argument("--force", action="store_true", help="redo judge calls that already have results")
     ap.add_argument("--runs", metavar="WS/TASK[/rN],...", help="redo/exclude: the runs to set aside or leave out")
-    ap.add_argument("--dry-run", action="store_true", help="import: list what would be imported, change nothing")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="import/clean: list what would be imported or trimmed, change nothing")
     ap.add_argument("--no-import", action="store_true",
                     help="don't reuse completed runs (default from [autoeval] import_completed)")
     ap.add_argument("--permission-mode", default=AUTO.get("permission_mode", "auto"))
@@ -1988,6 +2333,9 @@ def main():
     if bad := [t for t in ids if t not in tasks]:
         ap.error(f"unknown task(s) {bad}; active tasks: {', '.join(tasks)}")
     failed = None
+    if a.cmd == "clean":
+        clean_drafts(a.eval, workspaces(a.eval, a.ws), tasks, ids, dry=a.dry_run)
+        return
     if a.cmd in ("redo", "exclude"):
         try:
             take_lock()  # never move runs while a batch is making them
@@ -2013,7 +2361,7 @@ def main():
                     failed = e  # `all`: still judge and report the runs that worked
         finally:
             release_lock()
-        judges = AUTO.get("judges", ["chatgpt", "gemini"]) if a.judge == "all" else [a.judge]
+        judges = AUTO.get("judges", ["chatgpt", "gemini", "peers"]) if a.judge == "all" else [a.judge]
         if a.cmd in ("all", "judge", "report"):   # the report reads the stand-in's results too
             judges = standins(judges)
         if a.cmd in ("all", "judge", "report"):

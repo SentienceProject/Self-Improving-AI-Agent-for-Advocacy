@@ -102,8 +102,13 @@ python3 autoeval.py report 2026-10-20
   background tasks still running at the end. A failed run keeps everything, with `draft.failed.md` instead of
   `draft.md`, and the next batch redoes it. Runs get none of the claude.ai connectors (Gmail, Drive, ...), only
   the workspace's own `.mcp.json`.
-- **Judging.** The judges are `judges` in `[autoeval]` (ChatGPT, then Gemini, by default; `--judge chatgpt`,
-  `gemini` or `peers` for one). Run `python3 setup_judges.py` once to set them up;
+- **Judging.** The judges are `judges` in `[autoeval]` (ChatGPT, Gemini and peers by default; `--judge chatgpt`,
+  `gemini` or `peers` for one), for evals, techtest trials, checkups and promotion checks alike. The score that
+  counts is their weighted mean (`judge_weights`: peers 2, every other judge 1, so the peers count as much as the
+  outside judges together). Where the outside judges alone and the peers alone reach different results (a different
+  top workspace, a trial met vs not met, a checkup's or promotion check's verdict), the report says so, you're told
+  at the workspace's next session start (and by phone, if notifications are on), and any change the result would
+  bring waits `disagree_hold_hours` (12): `review.py` doesn't apply, keep or undo on a held result. Run `python3 setup_judges.py` once to set them up;
   free tiers are enough. A judge that isn't set up is replaced by a fresh, tool-less Claude session
   (`standin_judge`), and the combined report says so: it's the same model family as the agents it judges, so
   outside judges are better. Each call sends `JUDGE_PROMPT_CHATGPT.md` with the task request, the outputs in
@@ -123,7 +128,14 @@ python3 autoeval.py report 2026-10-20
     the deliverable starts and ends (cached in `results/length/`; regex rules are the fallback), and going over
     costs points after judging (`length_*` in config: 0.5 per 33.3% over for research limits, per 4% over for
     official ones, at most 2; several limited parts are averaged before the cap). The judge sees the count and
-    is told not to deduct for length itself.
+    is told not to deduct for length itself. If several drafts still get through (several versions or files), the
+    deduction is their mean, 0 for those within the limit.
+  - **Drafts holding several versions** (an earlier draft and a revised one, alternatives): before judging,
+    `draft_classifier` (Haiku) says whether a saved draft holds one version or several; if several,
+    `draft_trimmer` (Sonnet) gives the line ranges of the final, fully completed version, with its own notes and
+    citations, and the script keeps just those lines (the original stays as the run's `draft.full.md`). That's what
+    the judges see and what the length check counts. Cached in `results/drafts/`; `autoeval.py clean EVAL
+    --dry-run` lists what it would cut. Reports list cut drafts under "Drafts trimmed".
   - **Usage-scored tasks** (`usage_weight: W` in a task's frontmatter; AT3 uses 6.5): for a quick ask, where
     spending a lot is the failure. The score is the judge's × (1 − W/10) plus up to W points for usage: what the run
     spent beyond the workspace's start-up cost. Before the first such task, each workspace is sent just "Hi"
@@ -131,9 +143,11 @@ python3 autoeval.py report 2026-10-20
     here (other tasks' budgets already make them earn their place). Up to `usage_free_usd` ($0.15) over start-up
     keeps all W points, `usage_zero_usd` ($1.20) or more keeps none, and the points fall by the same amount each
     time the excess doubles. The report has a table of each workspace's start-up cost and reply, and each run's.
-  - **Peers** (`--judge peers`, not in the default `judges`): each run's own session is resumed (forked, in a
-    fresh copy, read and web tools only, `peer_budget_usd` cap) and judges the *other* runs' drafts for its task,
-    with `JUDGE_PROMPT_PEER.md`. Traps are left to the outside judges. Expensive: a few dollars a call.
+  - **Peers** (in the default `judges`): each run's own session is resumed (forked, in a fresh copy, read and web
+    tools only, `peer_budget_usd` cap, $3) and judges the *other* runs' drafts for its task, with
+    `JUDGE_PROMPT_PEER.md`. The prompt tells it the cap and asks for an early SCORES line it updates later; if the cap
+    stops it, the last SCORES line it wrote counts (the call is marked `salvaged`), and such a call isn't retried.
+    Traps are left to the outside judges. They use your plan's usage: up to the cap per call, one call per run.
     **What peers need kept:** each run's saved session, in `~/.claude/projects/` (one folder per run, named after
     its copy in `~/ai-welfare-copies/`; the copies themselves are deleted after each run, and peers don't need
     them), and the workspace folders the eval compared. Keep both while you might still want peer judging for that
@@ -142,8 +156,10 @@ python3 autoeval.py report 2026-10-20
     workspace sets a long period for its own sessions, but a Claude Code session started elsewhere may go by your
     user settings. The workspace's `setup.py` offers to set `"cleanupPeriodDays"` in `~/.claude/settings.json` for
     you (it asks first, and keeps a backup of the file); or add it yourself.
-  - **Combined report** (`results/auto/<eval>/combined.md`): ChatGPT and Gemini averaged as "outside", peers kept
-    apart and never averaged in; a task where the two sides pick different top workspaces is "inconclusive".
+  - **Combined report** (`results/auto/<eval>/combined.md`): per task, ChatGPT and Gemini averaged as "outside" and
+    the peers shown apart; a task where the two sides pick different top workspaces is "inconclusive". Overall, the
+    weighted mean of every judge is the score that counts, and a different top workspace overall between the two
+    sides is flagged.
   - **Fact checks:** where judges disagree (different tops, or `factcheck_gap` points apart on one workspace),
     `factcheck_extractor` (Sonnet) lists the factual disputes in their replies, and `factcheck_model` (Opus, with
     web tools) checks each against primary sources. Findings go to `results/auto/<eval>/factcheck/` and the end

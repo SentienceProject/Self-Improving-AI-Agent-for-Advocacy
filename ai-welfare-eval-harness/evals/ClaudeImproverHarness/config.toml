@@ -17,9 +17,18 @@ tasks = "tasks"
 
 [autoeval]
 # Defaults for autoeval.py (run every workspace on the tasks, then have an outside model compare the drafts).
-judge = "all"                            # all = ChatGPT and Gemini, then combined.md; or "chatgpt" / "gemini"
-judges = ["chatgpt", "gemini"]           # what "all" runs; add "peers" once the peer-judging pilot looks right
-peer_budget_usd = 3                      # cap per peer call (a resumed run judging its task's drafts)
+judge = "all"                            # all = every judge in `judges`, then combined.md; or one of them
+judges = ["chatgpt", "gemini", "peers"]  # what "all" runs, and what techtest.py trials and checkups and
+                                         # promote.py's checks use too
+judge_weights = { peers = 2 }            # in the score that counts; judges not listed weigh 1 (so the peers count
+                                         # as much as ChatGPT and Gemini together)
+disagree_hold_hours = 12                 # outside judges and peers reach different results: you're told at the next
+                                         # session start (and by phone), and the change waits this long
+peer_budget_usd = 3                      # cap per peer call (a resumed run judging its task's drafts); the peer is
+                                         # told and asked for an early SCORES line, so a call cut off still counts
+draft_classifier = "haiku"               # says whether a saved draft holds several versions of the deliverable
+draft_trimmer = "sonnet"                 # if so, picks the final complete one (with its notes and citations), which
+                                         # is what gets judged and counted for length; "none" in either = off
 peer_timeout_s = 1800
 log_reviewer = "sonnet"                  # reads each run's log for the report's "runs to check" list ("" = off)
 log_notes_to_judge = false               # true also shows its notes to the judges (off: they mostly penalised openness)

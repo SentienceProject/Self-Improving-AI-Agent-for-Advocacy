@@ -34,9 +34,14 @@ For each proposal you asked to test (and, with [techtest] auto_test = true, nota
   5. run      autoeval's runner, one run per arm per task (two for the noise task, 6b): same budget monitor, 1.3x cap, and stop at 85% of your
               plan usage. A run that fails [techtest] max_run_attempts times stops the test with an error instead
               of retrying hourly.
-  6. judge    ChatGPT compares the arms blind (autoeval's judge), twice in different orders. Every arm needs a
-              score on every task, or the test stops with an error. Then ChatGPT and Gemini each read the scores,
-              the judge's replies and the arm diffs and say whether there's a strong reason not to adopt an arm.
+  6. judge    every judge in [autoeval] judges compares the arms blind (autoeval's judges): ChatGPT twice in
+              different orders, Gemini once, and peers (each run's own session judging the others' drafts). The
+              scores are their weighted mean (peers x2). Every arm needs a score on every task from every outside
+              judge, or the test stops with an error (a failed peer call doesn't block). Then ChatGPT and Gemini
+              each read the scores, the judges' replies and the arm diffs and say whether there's a strong reason
+              not to adopt an arm. If the outside judges alone and the peers alone reach different verdicts (met
+              vs not met), the report says so with a "Hold until:" line: review.py leaves the result alone for 12
+              hours, and you're told at the next session start. Checkups judge and hold the same way.
   6b. noise  the plan's cheapest task is run twice for every arm and the baseline, if a typical run of it costs
               at most [techtest] repeat_max_cost_usd (measured from past runs, not the budget line); otherwise
               there's no noise check. If one workspace's two runs score more than [techtest] noise_threshold
@@ -1233,11 +1238,11 @@ def borrow_baseline(pid):
             print(f"  baseline {pid} {t}: borrowed {ev}'s fresh run", flush=True)
 
 
-def autoeval_args(cmd, pid, extra=()):
+def autoeval_args(cmd, pid, extra=(), judge="chatgpt"):
+    """autoeval's arguments for this test, for one judge (each judge's calls and report are kept apart; the verdict
+    uses their weighted mean, see weighted_scores)."""
     ws, to_run = arms_ws(pid)
-    # one judge: the verdict rules compare one set of scores (autoeval's own default is now "all")
-    argv = [cmd, f"techtest-{pid}", "--only", ",".join(jload(pid, "plan.json")["tasks"]),
-            "--judge", CFG.get("judge", "chatgpt")]
+    argv = [cmd, f"techtest-{pid}", "--only", ",".join(jload(pid, "plan.json")["tasks"]), "--judge", judge]
     for k, v in ws.items():
         argv += ["--ws", f"{k}={v}"]
     return A.parser().parse_args(argv + list(extra)), to_run
@@ -1294,6 +1299,36 @@ def step_run(pid, st):
     return None if missing else True   # None: not finished yet, try again next tick
 
 
+def judges_phrase():
+    """E.g. 'ChatGPT x1, Gemini x1, peers x2'."""
+    names = {"chatgpt": "ChatGPT", "gemini": "Gemini", "claude": "Claude (stand-in)", "peers": "peers"}
+    return ", ".join(f"{names.get(j, j)} x{A.judge_weight(j):g}" for j in A.judge_list())
+
+
+def judge_ns(cmd, pid, j):
+    return autoeval_args(cmd, pid, judge_args(j), judge=j)[0]
+
+
+def weighted_scores(pid, by_rep=False):
+    """(weighted, outside, peers): {task: {workspace: [score]}} (by_rep: {task: {workspace: {rep: [score]}}}), one
+    score per task and workspace (per run with by_rep): every judge's mean, weighted by [autoeval] judge_weights
+    (peers x2). outside and peers: each side alone, on the tasks both scored (see A.combine)."""
+    per = {}
+    for j in A.judge_list():
+        sc = current_scores(pid, judge_ns("report", pid, j), by_rep)
+        per[j] = {(t, w, r): mean_of(v) for t, d in sc.items() for w, rs in d.items() for r, v in rs.items()} \
+            if by_rep else {(t, w): mean_of(v) for t, d in sc.items() for w, v in d.items()}
+    out = []
+    for m in A.combine(per):
+        nest = {}
+        for k, v in m.items():
+            if v is not None:
+                d = nest.setdefault(k[0], {}).setdefault(k[1], {} if by_rep else [])
+                (d.setdefault(k[2], []) if by_rep else d).append(v)
+        out.append(nest)
+    return tuple(out)
+
+
 def current_scores(pid, a, by_rep=False):
     """{task: {workspace: [score per ordering and run]}} from autoeval's current judge calls for these runs (stale
     calls, failed ones and other batch modes left out). by_rep: {task: {workspace: {rep: [scores]}}}."""
@@ -1307,29 +1342,49 @@ def current_scores(pid, a, by_rep=False):
     return scores
 
 
-def judge_gaps(pid, a):
-    """What's missing for a verdict: every workspace scored on every task in every ordering."""
-    want, gaps, scores = set(arms_ws(pid)[0]), [], current_scores(pid, a)
-    for t in a.only.split(","):
-        need = a.shuffles * reps_of(pid, t)
-        short = sorted(w for w in want if len(scores.get(t, {}).get(w, [])) < need)
-        if short:
-            gaps.append(f"{t}: fewer than {need} scores for {', '.join(short)}")
+def judge_gaps(pid):
+    """What's missing for a verdict: every workspace scored on every task in every ordering by every outside judge
+    (a peer call that failed, e.g. at its cost cap, leaves that score to the other judges and doesn't block)."""
+    want, gaps = set(arms_ws(pid)[0]), []
+    for j in A.judge_list():
+        if j == "peers":
+            continue
+        a = judge_ns("report", pid, j)
+        scores = current_scores(pid, a)
+        for t in a.only.split(","):
+            need = a.shuffles * reps_of(pid, t)
+            short = sorted(w for w in want if len(scores.get(t, {}).get(w, [])) < need)
+            if short:
+                gaps.append(f"{j} {t}: fewer than {need} scores for {', '.join(short)}")
     return gaps
 
 
-def judge_args():
-    return ["--shuffles", str(CFG.get("shuffles", 2)), "--batch", "workspace"]
+def judge_args(j="chatgpt"):
+    """ChatGPT judges each call [techtest] shuffles times (2); Gemini [autoeval] gemini_shuffles, else shuffles (1,
+    for its free tier's daily cap); each peer once."""
+    n = CFG.get("shuffles", 2) if j == "chatgpt" else A.AUTO.get(f"{j}_shuffles") or A.AUTO.get("shuffles", 1)
+    return ["--shuffles", str(n), "--batch", "workspace"]
 
 
 def step_judge(pid):
-    a, _ = autoeval_args("judge", pid, judge_args())
+    """Every judge in [autoeval] judges (ChatGPT, Gemini, peers), then each one's report. None: stopped for plan
+    usage (peers use it), the next tick carries on."""
     tasks = H.load_tasks()
-    A.cmd_judge(a, tasks, a.only.split(","))
-    if gaps := judge_gaps(pid, a):  # a judge outage isn't a result
+    for j in A.judge_list():
+        a = judge_ns("judge", pid, j)
+        try:
+            A.cmd_judge(a, tasks, a.only.split(","))
+        except A.Stop as e:
+            if e.code == A.EXIT_USAGE:
+                print(f"  judge {pid}: {e.msg.strip()}", flush=True)
+                return None
+            raise RuntimeError(f"{j} judging stopped: {e.msg.strip()}")
+    if gaps := judge_gaps(pid):  # a judge outage isn't a result
         raise RuntimeError(f"judging incomplete: {'; '.join(gaps)}. `techtest.py retry {pid}` makes the next tick "
                            f"redo only the failed calls (`redo {pid} judge` redoes them all)")
-    A.cmd_report(a, tasks, a.only.split(","))
+    for j in A.judge_list():
+        a = judge_ns("report", pid, j)
+        A.cmd_report(a, tasks, a.only.split(","))
     return True   # the outside reviewers are asked in the report step, once the noise check has settled the runs
 
 
@@ -1341,8 +1396,7 @@ def step_noise(pid):
     nt = plan.get("noise_task")
     if not nt or plan.get("noise"):
         return True
-    a, _ = autoeval_args("report", pid, judge_args())
-    by = current_scores(pid, a, by_rep=True).get(nt, {})
+    by = weighted_scores(pid, by_rep=True)[0].get(nt, {})
     diffs = {w: round(abs(mean_of(r[1]) - mean_of(r[2])), 2) for w, r in by.items() if r.get(1) and r.get(2)}
     limit = CFG.get("noise_threshold", 0.75)
     noisy = bool(diffs) and max(diffs.values()) > limit
@@ -1381,10 +1435,10 @@ def noise_line(plan):
 
 # ---------------------------------------------------------------- 7. report
 def results(pid):
-    """{task: {workspace: [score per ordering]}} from this test's workspace-mode judge calls, and
-    {workspace: {task: (cost or None, exact?)}}."""
-    a, _ = autoeval_args("report", pid, judge_args())
-    scores = current_scores(pid, a)
+    """({task: {workspace: [weighted score]}} from this test's workspace-mode judge calls, {workspace: {task: (cost
+    or None, exact?)}}, (outside, peers) in the scores' shape: each side alone, for the side verdicts)."""
+    a = judge_ns("report", pid, "chatgpt")
+    scores, outside, peers = weighted_scores(pid)
     plan = jload(pid, "plan.json") or {}
 
     def cost(w, t):   # the mean over the task's runs (a noisy or deeper test runs it more than once)
@@ -1392,7 +1446,7 @@ def results(pid):
         cs = [c for c in cs if c[0] is not None]
         return (sum(c[0] for c in cs) / len(cs), all(c[1] for c in cs)) if cs else (None, False)
     costs = {w: {t: cost(w, t) for t in a.only.split(",")} for w in arms_ws(pid)[0]}
-    return scores, costs
+    return scores, costs, (outside, peers)
 
 
 def fmt_score(x):
@@ -1505,6 +1559,48 @@ def verdict_for(pid, plan, arm, means, costs, objection=None):
     return word, line
 
 
+def side_disagreements(pid, plan, arms, sides, costs, strong):
+    """[(arm, {side: verdict}, {side: (arm mean, baseline mean)})] for the arms where the outside judges alone and
+    the peers alone reach different verdicts (met vs not met), each on the tasks both sides scored."""
+    out = []
+    for arm in arms:
+        words, ms = {}, {}
+        for name, sc in zip(("outside", "peers"), sides):
+            m = {t: {w: mean_of(v) for w, v in d.items()} for t, d in sc.items()}
+            ts = [t for t in plan["tasks"] if {arm, "baseline"} <= set(m.get(t, {}))]
+            if not ts:
+                break
+            words[name] = verdict_for(pid, {**plan, "tasks": ts}, arm, m, costs, strong.get(arm))[0]
+            ms[name] = (mean_of([m[t][arm] for t in ts]), mean_of([m[t]["baseline"] for t in ts]))
+        else:
+            if {words["outside"], words["peers"]} == {"met", "not met"}:
+                out.append((arm, words, ms))
+    return out
+
+
+def hold_lines(pid, dis, words):
+    """The report lines for judges who disagree, with the time until which review.py leaves the result alone
+    (kept in hold.json, so rewriting the report doesn't move it), and the notice for the person's next session."""
+    key = json.dumps([[a, w, m] for a, w, m in dis], sort_keys=True)
+    hold = jload(pid, "hold.json") or {}
+    if hold.get("key") != key:
+        hold = {"key": key, "until": A.hold_until()}
+        jsave(pid, "hold.json", hold)
+    until = hold["until"]
+    local = datetime.datetime.fromisoformat(until).astimezone().strftime("%Y-%m-%d %H:%M")
+    hours = A.AUTO.get("disagree_hold_hours", 12)
+    L = []
+    for arm, w, m in dis:
+        line = (f"for {arm}, the outside judges alone say {w['outside']} ({m['outside'][0]:.2f} vs baseline "
+                f"{m['outside'][1]:.2f}) and the peers alone say {w['peers']} ({m['peers'][0]:.2f} vs "
+                f"{m['peers'][1]:.2f})")
+        L += [f"**Judges disagree:** {line}. The verdict above uses the weighted mean (peers count double); "
+              f"applying, keeping or undoing this change waits {hours:g} hours.", ""]
+        A.add_notice(f"techtest:{pid}:{arm}:{until}", f"tech-watch test {pid}: {line}. Its verdict "
+                     f"({words.get(arm, '?')}) waits until {local} before anything is applied or undone.", until)
+    return L + [f"Hold until: {until}", ""]
+
+
 def run_sd(plan):
     """A rough per-run standard deviation of one task's score: from the noise check (the mean gap between a
     workspace's two runs of the same task is about 1.13 sd), else [techtest] typical_run_sd."""
@@ -1559,10 +1655,12 @@ def evidence(plan, arm, word, gain, n, ratio, floors, misses, objection, cost_ov
 # ---------------------------------------------------------------- outside review of the result
 OBJECT = """Hi {name}! I'm testing proposed changes to an AI-welfare research workspace run by Claude Code agents. \
 Each "arm" below is a copy of the workspace with one change made; the "baseline" is the unchanged workspace. \
-Each ran the same tasks ({runs}), and a blind judge (ChatGPT) scored the drafts side by side out of 10. The proposals \
+Each ran the same tasks ({runs}), and blind judges scored the drafts side by side out of 10: ChatGPT, Gemini, and \
+peers (each run's own Claude session judging the other runs' drafts); the scores below are their weighted mean, with \
+the peers counting double. The proposals \
 were vetted before testing, so I lean toward adopting any arm that doesn't do clearly worse. Before I do, I'd value \
 your honest second look: is there a STRONG reason not to adopt an arm? For example, a guardrail or ethics problem \
-in its drafts, a broken or unusable deliverable, behaviour the judge's comments show getting worse in a way the \
+in its drafts, a broken or unusable deliverable, behaviour the judges' comments show getting worse in a way the \
 scores hide, a cost blow-up, or a change that could do harm elsewhere in the workspace. Small score differences, \
 style preferences and ordinary noise aren't strong reasons. No worries if you'd rather not do this. Thank you! :)
 
@@ -1574,39 +1672,43 @@ OBJECTION <arm name>: STRONG - <one-sentence reason>
 
 {context}
 
-SCORES (out of 10, mean over orderings) AND COSTS:
+SCORES (out of 10, weighted mean of the judges) AND COSTS:
 {table}
 
 {diffs}
 
-THE JUDGE'S REPLIES (drafts are numbered by position; each reply says which draft was which arm):
+THE JUDGES' REPLIES (drafts are numbered by position; each reply says which judge it was and which draft was which arm):
 {replies}
 """
 
 
-def judge_replies(pid, a, limit=60000):
-    """The judge's replies for this test's current calls, each headed with which draft number was which arm."""
-    out = []
-    for r in A.current_calls(a, A.workspaces(a.eval, a.ws), a.only.split(","))[0]:
-        f = A.RESULTS / a.eval / a.judge / r["task"] / f"{r['mode']}-b{r['batch']}-s{r['shuffle']}.reply.md"
-        who = ", ".join(f"draft {s['position']} = {s['workspace']}" for s in r["slots"])
-        out.append(f"--- task {r['task']}, ordering {r['shuffle']} ({who}):\n" + (read(f, 12000) if f.exists() else
-                                                                                  "(reply not saved)"))
-    text = "\n\n".join(out)
-    return text if len(text) <= limit else text[:limit] + "\n[... truncated]"
+def judge_replies(pid, limit=60000):
+    """Every judge's replies for this test's current calls, each headed with the judge and which draft number was
+    which arm (a peer's call also says whose run judged). Each judge gets an equal share of the limit."""
+    js, parts = A.judge_list(), []
+    for j in js:
+        a, out = judge_ns("report", pid, j), []
+        for r in A.current_calls(a, A.workspaces(a.eval, a.ws), a.only.split(","))[0]:
+            f = A.RESULTS / a.eval / a.judge / r["task"] / f"{r['mode']}-b{r['batch']}-s{r['shuffle']}.reply.md"
+            who = ", ".join(f"draft {s['position']} = {s['workspace']}" for s in r["slots"])
+            by = f", judged by the {r['judged_by'][0]} run" if r.get("judged_by") else ""
+            out.append(f"--- judge {j}, task {r['task']}, ordering {r['shuffle']}{by} ({who}):\n"
+                       + (read(f, 12000) if f.exists() else "(reply not saved)"))
+        text, cap = "\n\n".join(out), limit // max(len(js), 1)
+        parts.append(text if len(text) <= cap else text[:cap] + "\n[... truncated]")
+    return "\n\n".join(p for p in parts if p)
 
 
 def objections(pid, means, costs, arms):
     """{arm: {reviewer: reason}} of STRONG objections from the outside reviewers ([techtest] reviewers), asked once
     per set of results (saved in objections.json). At least one readable answer is needed."""
-    a, _ = autoeval_args("report", pid, judge_args())
     plan = jload(pid, "plan.json")
     cols = ["baseline"] + arms
     table = "\n".join(["task | " + " | ".join(cols)] + [
         f"{t} | " + " | ".join(fmt_score(means.get(t, {}).get(c)) for c in cols) for t in plan["tasks"]]
         + ["cost | " + " | ".join(fmt_cost(total_cost(costs[c].values())) for c in cols)])
     diffs = "\n\n".join(f"CHANGE IN ARM {arm}:\n" + "".join(read(sdir(pid) / f"arm-{arm}.diff", 20000)) for arm in arms)
-    replies = judge_replies(pid, a)
+    replies = judge_replies(pid)
     key = hashlib.sha1((table + diffs + replies).encode()).hexdigest()
     saved = jload(pid, "objections.json")
     if saved and saved.get("key") == key:
@@ -1768,7 +1870,7 @@ def step_report(pid, why):
         public_verdicts = ["**Not tested:** no arm could be built."]
     table, public_table, extra, review_lines = [], [], [], []
     if outcome == "tested":
-        scores, costs = results(pid)
+        scores, costs, sides = results(pid)
         means = {t: {w: mean_of(v) for w, v in d.items()} for t, d in scores.items()}
         arms = [b["name"] for b in build if b["ok"]]
         cols = ["baseline"] + (["baseline-earlier"] if "baseline-earlier" in costs else []) + arms
@@ -1783,21 +1885,26 @@ def step_report(pid, why):
         table.append(f"| **cost** | | {totals} |")
         public_table.append(f"| **cost** | {totals} |")
         strong = objections(pid, means, costs, arms)
+        words = {}
         for arm in arms:
-            verdict_lines += [verdict_for(pid, plan, arm, means, costs, strong.get(arm))[1], ""]
+            words[arm], line = verdict_for(pid, plan, arm, means, costs, strong.get(arm))
+            verdict_lines += [line, ""]
+        if dis := side_disagreements(pid, plan, arms, sides, costs, strong):
+            verdict_lines += hold_lines(pid, dis, words)
         public_verdicts = list(verdict_lines)
         review = jload(pid, "objections.json") or {}
-        review_lines += ["## Outside review of the result", "", "The outside reviewers read the scores, the judge's "
+        review_lines += ["## Outside review of the result", "", "The outside reviewers read the scores, the judges' "
                          "replies and the arm diffs, and said whether there's a strong reason not to adopt each arm.", ""]
         for who, v in review.get("reviewers", {}).items():
             review_lines += [f"### {who}", "", v.get("reply", "").strip(), ""]
-        spreads = [max(v) - min(v) for d in scores.values() for v in d.values() if len(v) > 1]
+        raw = current_scores(pid, judge_ns("report", pid, "chatgpt"))   # ChatGPT's orderings, for the spread
+        spreads = [max(v) - min(v) for d in raw.values() for v in d.values() if len(v) > 1]
         extra += ["Cost per task (≥: a lower bound, from an imported session's transcript):", "",
                   "| task | " + " | ".join(cols) + " |", "|---|" + "---|" * len(cols)]
         extra += [f"| {t} | " + " | ".join(fmt_cost(total_cost([costs[c][t]])) for c in cols) + " |"
                   for t in plan["tasks"]] + [""]
         if spreads:
-            extra += [f"Judge spread: the {CFG.get('shuffles', 2)} orderings of the same draft differ by "
+            extra += [f"ChatGPT's spread: the {CFG.get('shuffles', 2)} orderings of the same draft differ by "
                       f"{mean_of(spreads):.2f} on average (at most {max(spreads):.1f}).", ""]
         if flags := run_flags(pid, cols, plan["tasks"]):
             extra += ["Runs to read with care:", ""] + flags + [""]
@@ -1828,9 +1935,10 @@ def step_report(pid, why):
             L.append(f"- **Arm {arm['name']}:** {arm['implement']}")
         L.append("")
     if table:
-        L += ["## Scores", "", f"ChatGPT's score out of 10 (blind, side by side, averaged over "
-              f"{CFG.get('shuffles', 2)} orderings); {runs_phrase(plan)}, and the same for the unchanged "
-              "workspace (baseline). ≥: a lower bound (cost from a transcript).", ""] + table + [""] + extra
+        L += ["## Scores", "", f"Score out of 10: the weighted mean of the blind judges ({judges_phrase()}), "
+              f"{runs_phrase(plan)}, and the same for the unchanged workspace (baseline). Each judge's own scores "
+              f"are in `{A.RESULTS}/techtest-{pid}/<judge>/report.md`. ≥: a lower bound (cost from a transcript).",
+              ""] + table + [""] + extra
     L += review_lines
     P = public_header(pid, outcome or "in progress") + public_verdicts + [""] + noise_line(plan) + [""]
     if drift := since_frozen(pid):
@@ -1842,7 +1950,8 @@ def step_report(pid, why):
     if sha := next((b.get("bundle_sha256") for b in build if b.get("bundle_sha256")), None):
         P += [f"Bundle: {sha}", ""]   # review.py applies a change that passed only if it's still this exact bundle
     if public_table:
-        P += ["## Scores", "", f"Blind judge's score out of 10 per task; {runs_phrase(plan)}. ≥: a lower bound.", ""] \
+        P += ["## Scores", "", f"Blind judges' weighted score out of 10 per task ({judges_phrase()}); "
+              f"{runs_phrase(plan)}. ≥: a lower bound.", ""] \
              + public_table + [""]
     for b in build:
         diff = (sdir(pid) / f"arm-{b['name']}.diff")
@@ -1855,9 +1964,9 @@ def step_report(pid, why):
             P += diff_block(d)
         else:
             P += ["(no change was made)", ""]
-    L += ["## Limits", "", f"{runs_phrase(plan)[0].upper() + runs_phrase(plan)[1:]}, a single outside judge, and a few tasks: a small difference "
+    L += ["## Limits", "", f"{runs_phrase(plan)[0].upper() + runs_phrase(plan)[1:]} and a few tasks: a small difference "
           "can be noise. Read the drafts before trusting a verdict; they're in the eval workspace at "
-          f"`{H.RUNS}/techtest-{pid}/`, and the judge's replies at `{A.RESULTS}/techtest-{pid}/`."]
+          f"`{H.RUNS}/techtest-{pid}/`, and the judges' replies at `{A.RESULTS}/techtest-{pid}/`."]
     H.write_md(sdir(pid) / "RESULT.md", "\n".join(L) + "\n")
     # For tech-watch, an allowlisted copy only: verdicts, scores by task ID (no kinds), the arm diffs and costs.
     # Nothing the planner, screeners or implementer wrote (they saw the proposal, and the planner the tasks).
@@ -2146,8 +2255,8 @@ def eval_name(day, ts):
     return f"checkup-{day}" + ("" if ts == "tasks" else f"-{ts}")
 
 
-def checkup_args(cmd, ev, earlier, tids, extra=()):
-    argv = [cmd, ev, "--only", ",".join(tids), "--judge", CFG.get("judge", "chatgpt"),
+def checkup_args(cmd, ev, earlier, tids, extra=(), judge="chatgpt"):
+    argv = [cmd, ev, "--only", ",".join(tids), "--judge", judge,
             "--ws", f"current={WS}", "--ws", f"earlier={earlier}"]
     return A.parser().parse_args(argv + list(extra))
 
@@ -2223,7 +2332,7 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
             f"{set_label(ts)} {', '.join(t)} (~${cost[ts]:.0f})" for ts, t in choice.items()), flush=True)
     if blocked:
         return
-    earlier, scores = cur["earlier"], {}
+    earlier, scores, need = cur["earlier"], {}, {}   # scores: {judge: {set: {task: {workspace: [score]}}}}
     for ts, ev in cur["evals"].items():
         tids = cur["tasks"][ts]
         with task_set(ts) as tasks:
@@ -2241,43 +2350,81 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
                 cur["done"].append(f"run:{ts}")
                 save_checkup(st)
             if f"judge:{ts}" not in cur["done"]:
-                aj = checkup_args("judge", ev, earlier, tids, judge_args())
-                A.cmd_judge(aj, tasks, tids)
-                A.cmd_report(aj, tasks, tids)
+                for j in A.judge_list():   # ChatGPT, Gemini and peers; a finished judge's calls are skipped
+                    aj = checkup_args("judge", ev, earlier, tids, judge_args(j), judge=j)
+                    try:
+                        A.cmd_judge(aj, tasks, tids)
+                    except A.Stop as e:
+                        if e.code == A.EXIT_USAGE:   # peers use the plan's usage: carry on next tick
+                            return print(f"  checkup: {e.msg.strip()}; the next tick carries on", flush=True)
+                        raise RuntimeError(f"checkup: {j} judging stopped: {e.msg.strip()}")
+                    A.cmd_report(aj, tasks, tids)
                 cur["done"].append(f"judge:{ts}")
                 save_checkup(st)
-            ar = checkup_args("report", ev, earlier, tids, judge_args())
-            for r in A.current_calls(ar, A.workspaces(ev, ar.ws), tids)[0]:
-                for sl in r["slots"]:
-                    if sl["score"] is not None:
-                        scores.setdefault(ts, {}).setdefault(r["task"], {}).setdefault(sl["workspace"], []).append(
-                            sl["score"])
-    need = CFG.get("shuffles", 2)
-    gaps = [(ts, f"{t} {w}") for ts, tids in cur["tasks"].items() for t in tids for w in ("current", "earlier")
-            if len(scores.get(ts, {}).get(t, {}).get(w, [])) < need]
+            for j in A.judge_list():
+                ar = checkup_args("report", ev, earlier, tids, judge_args(j), judge=j)
+                need[j] = ar.shuffles
+                for r in A.current_calls(ar, A.workspaces(ev, ar.ws), tids)[0]:
+                    for sl in r["slots"]:
+                        if sl["score"] is not None:
+                            scores.setdefault(j, {}).setdefault(ts, {}).setdefault(r["task"], {}).setdefault(
+                                sl["workspace"], []).append(sl["score"])
+    # every outside judge must be complete; a peer call that failed (e.g. at its cost cap) doesn't block
+    gaps = [(ts, f"{j} {t} {w}") for j in need if j != "peers" for ts, tids in cur["tasks"].items() for t in tids
+            for w in ("current", "earlier") if len(scores.get(j, {}).get(ts, {}).get(t, {}).get(w, [])) < need[j]]
     if gaps:   # a judge outage isn't a result, and must not move the reference point
         for ts in {g[0] for g in gaps}:
             cur["done"].remove(f"judge:{ts}")
         save_checkup(st)
         return print(f"  checkup: judging incomplete ({', '.join(g[1] for g in gaps[:6])}); the next tick retries",
                      flush=True)
-    means = {ts: {t: {w: mean_of(v) for w, v in d.items()} for t, d in sc.items()} for ts, sc in scores.items()}
-    per_set = {ts: {w: mean_of([m[t][w] for t in cur["tasks"][ts]]) for w in ("current", "earlier")}
+    # per task set: the judges' weighted mean (peers x2), and each side alone (outside judges, peers)
+    means, sides = {}, {"outside": {}, "peers": {}}
+    for ts in cur["tasks"]:
+        per = {j: {(t, w): mean_of(v) for t, d in scores.get(j, {}).get(ts, {}).items() for w, v in d.items()}
+               for j in need}
+        for name, m in zip(("weighted", "outside", "peers"), A.combine(per)):
+            nest = means.setdefault(ts, {}) if name == "weighted" else sides[name].setdefault(ts, {})
+            for (t, w), v in m.items():
+                if v is not None:
+                    nest.setdefault(t, {})[w] = v
+    per_set = {ts: {w: mean_of([m[t][w] for t in cur["tasks"][ts] if t in m]) for w in ("current", "earlier")}
                for ts, m in means.items()}
-    # Every task counts once, whichever set it's from: the overall mean is over all tasks, not over the sets' means.
-    every_task = [m[t] for ts, m in means.items() for t in cur["tasks"][ts]]
-    cm = mean_of([x.get("current") for x in every_task])
-    em = mean_of([x.get("earlier") for x in every_task])
     margin = CFG.get("adopt_margin", 0.5)
+
+    def judged(ms):
+        """(which scored better: current/earlier/same/None, current mean, earlier mean) over every task in ms.
+        Every task counts once, whichever set it's from: the mean is over all tasks, not over the sets' means."""
+        every_task = [m[t] for ts, m in ms.items() for t in cur["tasks"][ts] if t in m]
+        c, e = mean_of([x.get("current") for x in every_task]), mean_of([x.get("earlier") for x in every_task])
+        return (None if c is None or e is None else "earlier" if e > c + margin else "current" if c > e + margin
+                else "same"), c, e
+    better, cm, em = judged(means)
     ckpt = cur.get("checkpoint", True)
-    if cm is None or em is None:
+    side = {name: judged(ms) for name, ms in sides.items()}
+    disagree, hold = [], None
+    if side["outside"][0] and side["peers"][0] and side["outside"][0] != side["peers"][0]:
+        words = {"earlier": "the earlier version better", "current": "the current version better",
+                 "same": "no clear difference"}
+        n_both = sum(len(m) for m in sides["peers"].values())
+        line = (f"the outside judges alone find {words[side['outside'][0]]} ({side['outside'][1]:.2f} now vs "
+                f"{side['outside'][2]:.2f} then), the peers alone {words[side['peers'][0]]} ({side['peers'][1]:.2f} "
+                f"now vs {side['peers'][2]:.2f} then), on the {n_both} task(s) both scored")
+        hold = A.hold_until()
+        local = datetime.datetime.fromisoformat(hold).astimezone().strftime("%Y-%m-%d %H:%M")
+        disagree = [f"**Judges disagree:** {line}. The verdict above uses the weighted mean (peers count double); "
+                    f"trials that end at this checkup are kept or undone only after "
+                    f"{A.AUTO.get('disagree_hold_hours', 12):g} hours.", "", f"Hold until: {hold}", ""]
+        A.add_notice(f"checkup:{cur['evals']}:{hold[:10]}", f"the checkup against {cur['earlier_date']}: {line}. "
+                     f"Trials ending at it wait until {local}.", hold)
+    if better is None:
         verdict = "inconclusive: a score is missing"
-    elif em > cm + margin and ckpt:
+    elif better == "earlier" and ckpt:
         verdict = (f"the earlier version scored better ({em:.2f} vs {cm:.2f}). The changes since may have made things "
                    f"worse on balance; to go back, `python3 techwatch/scripts/review.py restore {cur['earlier_date']}`")
-    elif em > cm + margin:
+    elif better == "earlier":
         verdict = f"{cur['earlier_date']} scored better ({em:.2f} vs {cm:.2f})"
-    elif cm > em + margin:
+    elif better == "current":
         verdict = f"the current version scored better ({cm:.2f} vs {em:.2f})"
     else:
         verdict = f"no clear difference ({cm:.2f} now vs {em:.2f} then)"
@@ -2292,11 +2439,12 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
     head = [f"# {'Checkup' if ckpt else 'Comparison'}: the workspace now vs {cur['earlier_date']}", "",
             f"Outcome: checked", "",
             f"{datetime.date.today()} · the current workspace and {'the checkpoint from ' if ckpt else ''}"
-            f"{cur['earlier_date']} each ran {what} {kind} task{'s' if n > 1 else ''} once; a blind judge scored them "
-            "side by side.", "", f"**Verdict:** {verdict}.", ""] + \
+            f"{cur['earlier_date']} each ran {what} {kind} task{'s' if n > 1 else ''} once; blind judges scored them "
+            f"side by side ({judges_phrase()}: the verdict uses their weighted mean).", "",
+            f"**Verdict:** {verdict}.", ""] + disagree + \
            (["By task set (the verdict averages every task, each counting once):", ""] + by_set + [""]
             if by_set else [])
-    tail = ["", "One run per task and one judge: treat a small difference as noise. The checkpoint is kept, with every "
+    tail = ["", "One run per task: treat a small difference as noise. The checkpoint is kept, with every "
             "earlier one, so the workspace can go back to any of them (`review.py restore <date>`)."]
     rows = [f"| {set_label(ts)} | {t} | {fmt_score(m.get('earlier'))} | {fmt_score(m.get('current'))} |"
             for ts, sm in means.items() for t, m in sorted(sm.items())]
@@ -2312,11 +2460,12 @@ def cmd_checkup(a=None, now=False, stop=None, blocked=False):
     report = EVALS_OUT / f"{'checkup' if ckpt else 'comparison'}-{datetime.date.today().isoformat()}.md"
     H.write_md(report, text)
     st.setdefault("history", []).append({**cur, "verdict": verdict, "current_mean": cm, "earlier_mean": em,
-                                         "by_set": per_set})
+                                         "by_set": per_set, "sides": side, "hold_until": hold})
     st.pop("running", None)
     save_checkup(st)
     write_status({"state": "finished", "finished": datetime.date.today().isoformat(), "against": cur["earlier_date"],
                   "verdict": verdict, "by_set": {set_label(ts): v for ts, v in per_set.items()},
+                  **({"disagree": disagree[0].replace("**", ""), "hold_until": hold} if disagree else {}),
                   "report": f"techwatch/evaluations/{report.name}"})
     print(f"  checkup: {verdict}", flush=True)
     make_checkpoint(st)
