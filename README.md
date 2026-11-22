@@ -21,7 +21,7 @@ Something not working? See [If something goes wrong](ai-welfare-workspace/README
 
 Casual mode (recommended): Windows, Linux, or MacOS (untested). 
 Hardened mode: Linux, or Windows with [WSL2](https://learn.microsoft.com/windows/wsl/install) (macOS untested).
-No computer of your own, or you work from claude.ai in a browser? See [Using it from claude.ai](ai-welfare-workspace/README.md#using-it-from-claudeai-no-computer-setup): nothing to install, and your work is saved to your own private GitHub copy.
+No computer of your own, or you work from claude.ai in a browser? Use the [cloud copy](https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy-Cloud) instead: nothing to install, and your work is saved to your own private GitHub copy.
 
 ## Features
 
