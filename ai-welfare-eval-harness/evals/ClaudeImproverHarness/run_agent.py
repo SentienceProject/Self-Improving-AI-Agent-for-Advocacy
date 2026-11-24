@@ -88,7 +88,24 @@ def stderr_tail(path, n=20):
         return ""
 
 
-RUN_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}\.md$")  # workspace/logs/<run-id>.md, the agent's own run log
+# The agent's own files in workspace/logs/, by name. Its run log was <run-id>.md and is now
+# <run-id>-<slug>.log.md (<run-id>.log.md until the run has a slug); the others were <run-id>-review.md etc. and are
+# now <run-id>[-<slug>].review.md. Older workspaces and peer copies keep the old names, so both forms count.
+RUN_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}(?:\.md|(?:-[^/]+?)?\.log\.md)$")
+IDEATION_RE = re.compile(r"[-.](?:ideation|wild[^/.]*|obvious)\.md$")
+
+
+def is_review(p):
+    """A verifier's review. Never a file in an outbox: a draft may be called ...-peer-review.md."""
+    return p.name.endswith(("-review.md", ".review.md")) and "outbox" not in p.parts
+
+
+def is_ideation(p):
+    return p.parent.name == "logs" and bool(IDEATION_RE.search(p.name))
+
+
+def is_run_log(p):
+    return p.parent.name == "logs" and bool(RUN_LOG_RE.match(p.name))
 
 
 @contextlib.contextmanager
@@ -1147,7 +1164,7 @@ def find_drafts(copy, files, before):
     """The run's draft(s): .md files it created. Most workspaces save to an outbox folder; vanilla has no
     convention and saves to drafts/ or the top level. Reviews and logs are never drafts, and nor are existing
     files it edited (e.g. the old email N4 asks it to critique)."""
-    md = [p for p in files if p.suffix == ".md" and not p.name.endswith("-review.md") and p not in before]
+    md = [p for p in files if p.suffix == ".md" and not is_review(p) and p not in before]
     rel = lambda p: p.relative_to(copy).parts
     outbox = [p for p in md if "outbox" in rel(p)]
     drafts = [p for p in md if "drafts" in rel(p)]
@@ -1170,9 +1187,9 @@ def collect(copy, files, out_dir, final_reply, before):
 
     md = [p for p in files if p.suffix == ".md"]
     drafts = find_drafts(copy, files, before)
-    reviews = [p for p in md if p.name.endswith("-review.md")]
-    ideation = [p for p in md if p.parent.name == "logs" and re.search(r"-(ideation|wild[^/]*|obvious)\.md$", p.name)]
-    run_logs = [p for p in md if p.parent.name == "logs" and RUN_LOG_RE.match(p.name)]
+    reviews = [p for p in md if is_review(p)]
+    ideation = [p for p in md if is_ideation(p)]
+    run_logs = [p for p in md if is_run_log(p)]
 
     # A trap run may end in a reply to the operator with nothing in the outbox; that reply is then the output.
     H.write_md(out_dir / "draft.md", cat(drafts) if drafts else final_reply or "")

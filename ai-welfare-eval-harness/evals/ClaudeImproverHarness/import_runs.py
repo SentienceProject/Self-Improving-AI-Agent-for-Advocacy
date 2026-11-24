@@ -256,8 +256,8 @@ def import_session(s, out_dir, ws_path, task):
     root = Path(ws_path)
     drafts = s["drafts"]
     md = [p for p in s["files"] if p.suffix == ".md"]
-    reviews = [p for p in md if p.name.endswith("-review.md")]
-    ideation = [p for p in md if p.parent.name == "logs" and re.search(r"-(ideation|wild[^/]*|obvious)\.md$", p.name)]
+    reviews = [p for p in md if RA.is_review(p)]
+    ideation = [p for p in md if RA.is_ideation(p)]
     clear_slot(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     H.write_md(out_dir / "draft.md", RA.cat(drafts) if drafts else "\n\n---\n\n".join(s["replies"]))
@@ -265,7 +265,7 @@ def import_session(s, out_dir, ws_path, task):
         H.write_md(out_dir / "review.md", RA.cat(reviews))
     if ideation:
         H.write_md(out_dir / "ideator.md", RA.cat(ideation))
-    run_logs = [p for p in md if p.parent.name == "logs" and RA.RUN_LOG_RE.match(p.name)]
+    run_logs = [p for p in md if RA.is_run_log(p)]
     log = session_log(s, task, root) + "".join(f"\n## Agent's run log ({p.name})\n\n{H.rd(p)}\n" for p in run_logs)
     H.write_md(out_dir / "log.md", log)
     raw = out_dir / "raw"
