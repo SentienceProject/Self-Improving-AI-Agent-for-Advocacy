@@ -950,7 +950,16 @@ def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=Non
                 ev = record(line)
                 if ev.get("type") == "result":
                     working, final_cost = False, ev.get("total_cost_usd") or final_cost
-                    last_reply = ev.get("result") or last_reply
+                    if ev.get("is_error"):
+                        # A dropped connection or API error ends a turn, not the session: claude goes on (retries,
+                        # background subagents report back). Keep watching, so the budget messages still go out
+                        # (a 2026-11-21 run lost them all after one ECONNRESET). The error text is not the agent's
+                        # reply, so the answerer isn't asked to judge it. A session that is really over exits, and
+                        # a stuck one ends after the usual "continue" nudges.
+                        print(f"    [{label}] error result ({str(ev.get('result') or '')[:100]}); still watching",
+                              flush=True)
+                    else:
+                        last_reply = ev.get("result") or last_reply
                 elif ev.get("type") in ("assistant", "user"):
                     working = True  # includes background subagents reporting back after a turn ended
                 if limit := limit_event(ev):
@@ -960,8 +969,6 @@ def run_claude(args, copy, request, out_dir, label, budget, before=None, cap=Non
                 if probe_denied(ev, probe_state):
                     probe_stop, kill_reason = True, "sandbox probe denied"
                     print(f"    [{label}] STOPPED: the sandbox preflight probe was denied, so Bash stays locked", flush=True)
-                    break
-                if ev.get("type") == "result" and ev.get("is_error"):
                     break
             # The trust warning is printed at startup: an untrusted copy ignores the allow list, so stop at once.
             if untrusted is None and time.time() - started < 120 and err_path.stat().st_size != err_size:

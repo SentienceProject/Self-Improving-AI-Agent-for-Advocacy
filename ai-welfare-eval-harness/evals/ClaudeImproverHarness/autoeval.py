@@ -1415,8 +1415,8 @@ def ask_peer(ev, name, tid, rep, prompt):
     transcript."""
     md, d = meta(ev, name, tid, rep), H.run_dir(version(ev, name), tid, rep)
     raw = d / "raw" / "transcript.jsonl"
-    if md.get("imported"):
-        src, sid = raw, md.get("source", "").removeprefix("session:")
+    if md.get("imported"):   # its transcript came along; source_session names the session (older metas: source)
+        src, sid = raw, md.get("source_session") or md.get("source", "").removeprefix("session:")
     else:
         sid = RA.session_id(raw)
         src = project_dir(md.get("copy", "")) / f"{sid}.jsonl"
