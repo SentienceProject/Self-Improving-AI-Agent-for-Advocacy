@@ -1273,6 +1273,9 @@ def cmd_judge(a, tasks, ids):
             # peers: shuffle s is judged by the group's s-th run (its own session), on the other runs' drafts only,
             # so each run judges once
             for s in range(1, (len(group) if a.judge == "peers" else a.shuffles) + 1):
+                if a.judge == "peers" and getattr(a, "peer_judges", None) \
+                        and sorted(group, key=lambda r: (r[0], r[1]))[s - 1][0] not in a.peer_judges.split(","):   # same pick as judged_by below
+                    continue   # --peer-judges: only these workspaces' runs judge (the others' calls aren't made)
                 f = out / tid / f"{a.batch}-b{b}-s{s}.json"
                 if f.exists():
                     old = json.loads(f.read_text())
@@ -2333,6 +2336,8 @@ def parser():
     ap.add_argument("--size", type=int, default=AUTO.get("batch_size", 4), help="outputs per call (mixed/pool)")
     ap.add_argument("--shuffles", type=int,
                     help="judge each call this many times (default: [autoeval] <judge>_shuffles, else shuffles)")
+    ap.add_argument("--peer-judges", metavar="NAMES",
+                    help="peers: only these comma-separated workspaces' runs judge, e.g. earlier (fewer calls)")
     ap.add_argument("--force", action="store_true", help="redo judge calls that already have results")
     ap.add_argument("--runs", metavar="WS/TASK[/rN],...", help="redo/exclude: the runs to set aside or leave out")
     ap.add_argument("--dry-run", action="store_true",
