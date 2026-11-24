@@ -17,11 +17,12 @@
 
 3. In the same terminal, type `claude` into the command line and hit enter. Trust the folder when asked, and ask Claude something.
 
-Something not working? See [If something goes wrong](ai-welfare-workspace/README.md#if-something-goes-wrong).
+Use the [Cloud version](https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy-Cloud) to access the workspace from any machine with the Claude app.
 
-Casual mode (recommended): Windows, Linux, or MacOS (untested). 
-Hardened mode: Linux, or Windows with [WSL2](https://learn.microsoft.com/windows/wsl/install) (macOS untested).
-No computer of your own, or you work from claude.ai in a browser? Use the [cloud copy](https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy-Cloud) instead: nothing to install, and your work is saved to your own private GitHub copy.
+Casual mode (recommended): Windows, Linux, or macOS (untested).
+Hardened mode: Linux, or Windows with [WSL2](https://learn.microsoft.com/windows/wsl/install).
+
+Something not working? See [If something goes wrong](ai-welfare-workspace/README.md#if-something-goes-wrong).
 
 ## Features
 
@@ -52,24 +53,24 @@ Ships with 2 folders, but the eval harness won't be necessary for many casual us
 
 | Folder | What it is |
 |---|---|
-| [`ai-welfare-workspace/`](ai-welfare-workspace/) | **The assistant.** |
-| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | **Tests changes to the workspace and evaluates them.** |
+| [`ai-welfare-workspace/`](ai-welfare-workspace/) | The assistant. |
+| [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | Tests changes to the workspace and evaluates them. |
 
 See the [workspace README](ai-welfare-workspace/README.md) for more information. Refer to the [harness README](ai-welfare-eval-harness/README.md) for testing and comparing versions.
 
 ## Disclaimers
-**This is the beta version.** Currently, this workspace performs about as well as a carefully prompted, guided vanilla Claude Code session with access to ethics and instructions files. The maintainer has little coding/AI knowledge and is unsure if many of the workspace's features really help. My aim is to give advocates without a powerful AI setup access to one, and to give advocates with deeper AI knowledge a prototype to build off of.
+**This is version 1.0.0.** Currently, this workspace performs slightly better than a carefully prompted, guided default Claude Code session with access to ethics and instructions files. The maintainer has little coding/AI knowledge and is unsure if many of the workspace's features really help. My aim is to give advocates without a powerful AI setup access to one, and to give advocates with deeper AI knowledge a prototype to build off of.
 
 **Updates come from one person with limited usage.** The workspace is maintained by a single individual, so
-updates may be slow or stop. Future Claude Code updates may break the workspace or make it less useful than plain
+updates may be slow or stop. Future Claude Code updates may break the workspace or make it less useful than default
 Claude Code. If you run into either problem, or anything else in the workspace breaks, I recommend switching to
-vanilla Claude Code (run `claude` in any other folder) rather than waiting for my updates.
+default Claude Code (run `claude` in any other folder) rather than waiting for my updates.
 
 **Please use caution when using this workspace for social media.** Clearly AI-generated advocacy content can damage the credibility of the animal- and digital-minds-advocacy fields.
 
 ## Status
 
-Version 0.1.0. Tested with Claude Code 2.1.327 on Linux (WSL2) and Windows; macOS is untested. Reports are welcome:
+Version 1.0.0. Tested with Claude Code 2.1.331 on Linux (WSL2) and Windows; macOS is untested. Reports are welcome:
 open an issue.
 
 ## License and intended use

@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 — 2026-11-24
+
+The repository is now public. Tested with Claude Code 2.1.331 on Linux (WSL2). Ships with ai-welfare-workspace
+1.0.0.
 
 - techtest freezes the workspace when it builds a test: the baseline runs in that frozen copy and the arms are
   built from it. Editing the workspace mid-test no longer stops the test with "instruction files changed in the
