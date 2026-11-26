@@ -871,7 +871,7 @@ def diff_against_workspace(trial, before, after, base=None):
 
 
 def apply_bundle(trial, pid):
-    """Apply tech watch's staged change to the copy exactly as review.py would (write/append inside the copy;
+    """Apply tech watch's staged change to the copy exactly as review.py would (write/append/edit inside the copy;
     manual and command steps are left out). Returns a list of problems."""
     bundle, problems = TW / "staged" / pid, []
     try:   # what each target looked like when tech watch prepared the change (techwatch.py's record_bases)
@@ -886,6 +886,15 @@ def apply_bundle(trial, pid):
         f, src = (trial / rel).resolve(), (bundle / str(ch.get("source", ""))).resolve()
         if not f.is_relative_to(trial.resolve()) or f == trial.resolve():
             problems.append(f"[{i}] refused {rel!r}: outside the copy")
+            continue
+        if ch.get("action") == "edit":
+            # exact replacements, applied to the copy's file as it is (frozen for this test): an edit fits a file
+            # edited since staging as long as its text is still there exactly once, so no merge is needed
+            new, why = apply_edits(f.read_text(encoding="utf-8") if f.is_file() else "", ch.get("edits"))
+            if new is None:
+                problems.append(f"[{i}] {rel}: {why}: re-stage it (techwatch.py stage {pid})")
+                continue
+            f.write_text(new, encoding="utf-8")
             continue
         if not src.is_relative_to(bundle.resolve()) or not src.is_file():
             problems.append(f"[{i}] source {ch.get('source')!r} is missing or outside the bundle")
@@ -913,6 +922,23 @@ def apply_bundle(trial, pid):
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(new, encoding="utf-8")
     return problems
+
+
+def apply_edits(old, edits):
+    """A staged "edit" step's replacements made in order, as tech watch's review.py edited() does: (text, None), or
+    (None, why it can't be)."""
+    if not isinstance(edits, list) or not edits:
+        return None, "it lists no edits"
+    text = old
+    for k, e in enumerate(edits, 1):
+        a, b = (e.get("old"), e.get("new")) if isinstance(e, dict) else (None, None)
+        if not isinstance(a, str) or not a or not isinstance(b, str):
+            return None, f"edit {k} needs a non-empty \"old\" text and a \"new\" text"
+        n = text.count(a)
+        if n != 1:
+            return None, f"edit {k}'s \"old\" text is " + ("not in the file" if not n else f"in the file {n} times")
+        text = text.replace(a, b, 1)
+    return text, None
 
 
 def staging_version(pid, rel, sha):
