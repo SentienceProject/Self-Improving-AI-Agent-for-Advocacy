@@ -1,0 +1,19 @@
+{
+  "name": "sentience-project",
+  "description": "Tools for advocates from the Self-Improving AI Agent for Advocacy project",
+  "owner": {
+    "name": "SentienceProject"
+  },
+  "plugins": [
+    {
+      "name": "fact-check",
+      "source": "./fact-check",
+      "description": "Fact-check a draft: links, DOIs, arXiv IDs and quotes, then an independent verifier compares each claim with its source."
+    },
+    {
+      "name": "backlog",
+      "source": "./backlog",
+      "description": "Save ideas and unfinished work for later, and spend the usage left before the weekly reset on them."
+    }
+  ]
+}

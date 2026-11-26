@@ -1,0 +1,10 @@
+{
+  "name": "fact-check",
+  "version": "1.0.0",
+  "description": "Fact-check advocacy drafts: a mechanical check of links, DOIs, arXiv IDs and quotes, then an independent verifier that compares each claim with its cited source.",
+  "author": { "name": "SentienceProject" },
+  "homepage": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy/tree/main/fact-check",
+  "repository": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": ["fact-checking", "citations", "advocacy", "verification"]
+}

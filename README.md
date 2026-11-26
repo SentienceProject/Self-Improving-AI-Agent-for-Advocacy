@@ -45,16 +45,20 @@ Other features:
 - Save promising ideas into a backlog to automatically run using remaining plan usage at the end of the week.
 - Find and download a corpus of papers for agent drafts to use.
 - Citation checker automatically applied to drafts.
+- The fact-checking (citation checker + verifier) is also a standalone skill anyone can install: see [`fact-check/`](fact-check/).
+- So is the backlog, for Claude chat (a weekly check-in) and Claude Code or Desktop (automatic): see [`backlog/`](backlog/).
 - Hardened mode that runs Claude in a bubblewrap sandbox, limiting network access and disallowing code outside the sandbox.
 
 ## Folders
 
-Ships with 2 folders, but the eval harness won't be necessary for many casual users:
+Ships with 4 folders, but the eval harness won't be necessary for many casual users:
 
 | Folder | What it is |
 |---|---|
 | [`ai-welfare-workspace/`](ai-welfare-workspace/) | The assistant. |
 | [`ai-welfare-eval-harness/`](ai-welfare-eval-harness/) | Tests changes to the workspace and evaluates them. |
+| [`fact-check/`](fact-check/) | The workspace's fact-checking as a skill for anyone: `/plugin install fact-check --marketplace SentienceProject/Self-Improving-AI-Agent-for-Advocacy` |
+| [`backlog/`](backlog/) | The backlog as a skill for anyone: `/plugin install backlog --marketplace SentienceProject/Self-Improving-AI-Agent-for-Advocacy` |
 
 See the [workspace README](ai-welfare-workspace/README.md) for more information. Refer to the [harness README](ai-welfare-eval-harness/README.md) for testing and comparing versions.
 

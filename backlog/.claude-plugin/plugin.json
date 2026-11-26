@@ -1,0 +1,10 @@
+{
+  "name": "backlog",
+  "version": "1.0.0",
+  "description": "A backlog for the usage left before your plan's weekly reset: save ideas and unfinished work, and work through them unattended (Claude Code / Desktop, usage watched) or after a weekly check-in (claude.ai).",
+  "author": { "name": "SentienceProject" },
+  "homepage": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy/tree/main/backlog",
+  "repository": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": ["backlog", "usage", "scheduling", "advocacy"]
+}
