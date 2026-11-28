@@ -1,0 +1,16 @@
+{
+  "description": "At session start, one line if tech watch has proposals waiting for you (silent otherwise).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/tech-watch/scripts/scan.py\" waiting 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

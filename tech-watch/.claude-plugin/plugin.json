@@ -1,0 +1,10 @@
+{
+  "name": "tech-watch",
+  "version": "1.0.0",
+  "description": "Watch for new technology that would help your work (Claude models and features, AI and other tools, data sources, ways of working) and get a few specific proposals with evidence, the case against and cost. Scheduled in the background (Claude Code) or a weekly check-in (claude.ai); nothing changes without your yes.",
+  "author": { "name": "SentienceProject" },
+  "homepage": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy/tree/main/tech-watch",
+  "repository": "https://github.com/SentienceProject/Self-Improving-AI-Agent-for-Advocacy",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": ["tech-watch", "new-tools", "ai-models", "advocacy", "scheduling"]
+}

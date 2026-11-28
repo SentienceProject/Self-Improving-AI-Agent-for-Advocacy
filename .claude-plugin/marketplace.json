@@ -14,6 +14,11 @@
       "name": "backlog",
       "source": "./backlog",
       "description": "Save ideas and unfinished work for later, and spend the usage left before the weekly reset on them."
+    },
+    {
+      "name": "tech-watch",
+      "source": "./tech-watch",
+      "description": "Watch for new technology that would help your work and get a few specific, evidenced proposals; nothing changes without your yes."
     }
   ]
 }
