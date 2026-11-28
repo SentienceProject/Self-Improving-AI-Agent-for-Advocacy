@@ -9,11 +9,11 @@ Usage cap: 90%
 Check-in: 1 day before the reset
 Mode: (automatic or check-in; set up on first use)
 Claude adds items: ask me first
-This week: (your answer to the check-in, if any)
+This week: (your answer to the check-in, with the date of the reset it's for)
 
-<!-- Example item (delete it):
+<!-- An example item. B0 is only for the example: the first real item is B1.
 
-## B1 · Find out whether the 2023 shrimp stunning trial was replicated
+## B0 · Find out whether the 2023 shrimp stunning trial was replicated
 added 2026-11-20 by me · size small
 What a good answer looks like: the follow-up studies, their size, and whether they agree.
 - progress 2026-11-22: found two follow-up papers; still need the 2025 review

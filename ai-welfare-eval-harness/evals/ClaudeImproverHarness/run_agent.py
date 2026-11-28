@@ -420,15 +420,49 @@ def _save_usage_cache(c):
     os.replace(tmp, USAGE_CACHE)
 
 
-def _fetch_usage():
-    tok = json.loads((Path.home() / ".claude" / ".credentials.json").read_text())["claudeAiOauth"]["accessToken"]
+def _login():
+    return json.loads((Path.home() / ".claude" / ".credentials.json").read_text())["claudeAiOauth"]
+
+
+def _refresh_login():
+    """Claude Code's saved login expires a few hours after it last ran, and only Claude Code renews it (at night,
+    say, the backlog's check would otherwise find it expired). Try `claude auth status`, then a one-line Haiku
+    reply. True if the login is valid afterwards."""
+    claude = shutil.which("claude")
+    if not claude:
+        return False
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    for cmd in ([claude, "auth", "status"],
+                [claude, "-p", "--model", "haiku", "--max-turns", "1", "--permission-mode", "dontAsk",
+                 "Please reply with just OK (this only renews the login for a usage check). Thank you!"]):
+        try:
+            subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=120, env=env,
+                           cwd=tempfile.gettempdir())
+            if (_login().get("expiresAt") or 0) / 1000 > time.time() + 60:
+                return True
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+            return False
+    return False
+
+
+def _fetch_usage(renewed=False):
+    login = _login()
+    if not renewed and login.get("expiresAt") and login["expiresAt"] / 1000 < time.time() + 60 and _refresh_login():
+        login, renewed = _login(), True
     req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
-        "Authorization": f"Bearer {tok}", "anthropic-beta": "oauth-2025-04-20"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        d = json.load(r)
-    return {"five_hour": d["five_hour"]["utilization"], "seven_day": d["seven_day"]["utilization"],
-            "resets_at": d["five_hour"]["resets_at"],
-            "week_resets_at": (d.get("seven_day") or {}).get("resets_at")}   # used by the workspace's backlog
+        "Authorization": f"Bearer {login['accessToken']}", "anthropic-beta": "oauth-2025-04-20"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 401 and not renewed and _refresh_login():
+            return _fetch_usage(renewed=True)
+        raise
+    five = d.get("five_hour") or {}   # empty or missing when nothing was used in the last 5 hours: 0%
+    return {"five_hour": five.get("utilization") or 0, "seven_day": d["seven_day"]["utilization"],
+            "resets_at": five.get("resets_at"),
+            "week_resets_at": (d.get("seven_day") or {}).get("resets_at"),   # used by the workspace's backlog
+            "extra_usage": bool((d.get("extra_usage") or {}).get("is_enabled"))}   # paid usage past the limit
 
 
 def _retry_after(e):

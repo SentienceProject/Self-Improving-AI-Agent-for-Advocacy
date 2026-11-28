@@ -36,7 +36,9 @@ Or copy the `skills/backlog/` folder into `~/.claude/skills/`.
 
 **Claude chat (claude.ai or the Claude apps), Pro plan or higher** (scheduled tasks need a paid plan):
 
-1. Zip the `skills/backlog` folder so the zip contains `backlog/SKILL.md`.
+1. Make a zip of the `skills/backlog` folder, not the whole plugin: the zip must have `backlog/SKILL.md` at its
+   top. On Windows, right-click `skills/backlog` → Send to → Compressed (zipped) folder. On a Mac, right-click it →
+   Compress. Or, in a terminal in this folder: `cd skills && zip -r ../backlog.zip backlog -x '*__pycache__*'`.
 2. In Claude, open Settings → Capabilities and turn on **Code execution and file creation** (called "Create and
    edit files" in newer versions), so Claude can hand back the updated list as a file.
 3. Go to Customize → Skills, click **+**, then **Create skill** → **Upload a skill**, choose the zip, and switch
@@ -59,10 +61,22 @@ printed or saved. Try it in a terminal:
 
 - Automatic runs need your computer on and awake in your quiet hours, with Claude Desktop open (for its scheduled
   tasks) or a system scheduler running `claude -p`.
+- Claude Code's saved login expires a few hours after it last ran. When a check finds it expired (at night, say),
+  the script asks Claude Code to renew it: `claude auth status` first, then if needed a one-line reply from Haiku,
+  which uses a tiny amount of usage. `--no-refresh` turns this off.
 - Usage is checked every 15 minutes or so during a run, so a run can go a little past your cap.
+- "Use it all" raises the caps to 98% of the weekly and the 5-hour limit. If you've turned on paid extra usage, the
+  plan's limit no longer stops work, so automatic runs keep your normal caps then, and in chat Claude suggests a
+  number of items instead.
+- The scheduled check fires only in the quiet hours near your reset (Claude Desktop), or runs the usage script
+  first and starts Claude only when it says GO (a terminal scheduler), so most hours of the week cost nothing.
 - An unattended run can't ask you anything: it drafts instead of sending, and skips anything that needs your
   approval. Results start with what was done, what was found and what's left.
-- Tested on Linux. On macOS the script reads the login from the Keychain, which is untested.
+- Automatic mode needs [Python](https://www.python.org/downloads/) 3.9 or newer (tested on 3.9 and 3.14; 3.9 is
+  past its end of life, so use a current version if you can). Tested on Linux. On macOS the script reads the login
+  from the Keychain, which is untested.
+- Quiet hours can be written `00:00-06:00`, `10pm-6am`, `1am to 5am` and so on; if the script can't read them,
+  nothing runs (it never takes them as "any hour"). Without a known weekly reset time, nothing runs either.
 
 ## Tests
 
