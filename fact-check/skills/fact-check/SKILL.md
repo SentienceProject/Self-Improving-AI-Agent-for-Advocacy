@@ -1,7 +1,7 @@
 ---
 name: fact-check
 description: Fact-check a draft before it goes out (an op-ed, letter, email to a decision-maker, social post, press release, report or brief). First a mechanical check of its links, DOIs, arXiv IDs and quotes; then an independent, read-only verifier compares each factual claim with the source it cites and reports what's unsupported, overstated, misquoted or out of date. Use when someone asks to fact-check, verify, or check the sources, citations or quotes in a draft, or before sending anything public or important that makes factual claims.
-license: PolyForm Noncommercial 1.0.0 (see LICENSE in the repository)
+license: PolyForm Noncommercial 1.0.0 (https://polyformproject.org/licenses/noncommercial/1.0.0)
 compatibility: Python 3.9+. Works best in Claude Code (runs the verifier as a separate subagent). Needs internet access to check links and catalogues; without it, only quotes against saved sources are checked.
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/check_citations.py *)
 ---
@@ -37,14 +37,34 @@ source texts or PDFs of their own. With many links it takes a minute. The checke
 and Crossref and opens each link, so those sites can see what's being read. Mention this once if the draft is
 confidential, and use `--no-links` or `--offline` if they'd rather not.
 
-Exit code 0 means nothing was flagged, 1 means something is flagged in the table, and 2 means some lookups failed,
-so the table is incomplete.
+Exit code 0 means everything was checked and nothing was flagged, 1 means something is flagged in the table, and 2
+means nothing was flagged but some rows weren't checked ("couldn't check", "refused", "not checked").
 
 **In Claude chat (claude.ai, the apps)** the code sandbox usually can't reach websites, only package sites. There,
 run it with `--offline`, adding `--sources <folder>` for any source files the person attached, so quotes get checked
-against those. Then do the link and identifier checks in step 3 with your own web search and fetch tools: open each
-cited link, and look up each DOI at `https://doi.org/<doi>` and each arXiv ID at `https://arxiv.org/abs/<id>`. Tell
-the person those checks were done by reading, not mechanically.
+against those. Put the attached files in that folder, and when you know which link a file is a copy of, start the
+file with a line `Source: <that link>`: then quotes citing the link are checked against that file. (A PDF can't take
+the line; it's still searched, but a misquote is only caught when the file has a passage close to the quote.) The table then
+lists every link, DOI and arXiv ID as "not checked": that's your list for checking them by hand with your own web
+search and fetch tools, before step 3.
+
+- **Links:** open each one. If the fetch tool won't open it (some sites block it), try the page's copy on
+  `https://web.archive.org/web/<link>`, or search for its title. If neither works, ask the person to attach the
+  page (saved as PDF, or its text pasted), or report it as "couldn't check". Don't use news coverage of it as a
+  substitute for the page itself.
+- **DOIs:** don't rely on `https://doi.org/<doi>`. In chat it often fails for real and invented DOIs alike, and
+  publishers' pages can come back empty. Search for the DOI, then for the paper's title and first author, and look
+  for its record on PubMed, Crossref (search.crossref.org) or the journal's own site. A record confirms the paper
+  exists and shows its real title, authors and year. PubMed labels retracted papers "Retracted Publication", so
+  look for that too.
+- **arXiv IDs:** open `https://arxiv.org/abs/<id>` for the title, authors and abstract.
+- **Quotes from a fetched page:** a fetch tool usually returns a summary, and quotes only short stretches (about 125
+  characters) word for word. Ask it for the quote's passage one short piece at a time: the first words, the last
+  words, and any number or hedge in between. Treat anything it won't give word for word as unchecked. For a long
+  quote, asking the person to attach the source is quicker and surer.
+
+A paper you couldn't find a record for is **"couldn't confirm"**, never "checked". Say which checks were done by
+reading rather than mechanically.
 
 **3. Run the verifier.** If you can start a subagent (in Claude Code, the Agent tool), start a general-purpose one
 on the most capable model available (Opus if you can choose; checking evidence is not the place to save money),

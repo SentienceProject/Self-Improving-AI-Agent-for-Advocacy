@@ -34,8 +34,10 @@ Or copy the `skills/fact-check/` folder into `~/.claude/skills/` (all your proje
 
 **Claude chat (claude.ai or the Claude apps), any plan including Free:**
 
-1. Download `fact-check.zip` (a zip of the `skills/fact-check` folder; to make it yourself, zip that folder so the
-   zip contains `fact-check/SKILL.md`).
+1. Make a zip of the `skills/fact-check` folder, not the whole plugin: the zip must have `fact-check/SKILL.md` at
+   its top. On Windows, right-click `skills/fact-check` → Send to → Compressed (zipped) folder. On a Mac, right-click
+   it → Compress. Or, in a terminal in this folder:
+   `cd skills && zip -r ../fact-check.zip fact-check -x '*__pycache__*'`.
 2. In Claude, open Settings → Capabilities and turn on **Code execution and file creation** (called "Create and
    edit files" in newer versions).
 3. Go to Customize → Skills, click **+**, then **Create skill** → **Upload a skill**, choose the zip, and switch
